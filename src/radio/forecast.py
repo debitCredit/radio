@@ -31,6 +31,7 @@ def _fit_prophet(df: pl.DataFrame, changepoint_prior: float = 0.1) -> Prophet:
     """Fit a Prophet model. Returns the fitted model."""
     m = Prophet(
         changepoint_prior_scale=changepoint_prior,
+        changepoint_range=0.95,  # default 0.8 misses recent changes
         yearly_seasonality=True,
         weekly_seasonality=True,
         daily_seasonality=False,
