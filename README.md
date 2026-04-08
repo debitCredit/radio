@@ -57,39 +57,67 @@ uv run radio stats
 
 Add `-v` for debug logging: `uv run radio -v enrich`
 
-## Architecture
+## Technical details
+
+### Pipeline
+
+The system runs as a four-stage pipeline, each stage incremental:
 
 ```
-src/radio/
-  cli.py              Click CLI entrypoint
-  scraper.py           Async httpx scraper for radio357.pl playlists
-  enrichment.py        Multi-provider enrichment orchestrator
-  storage.py           Polars Parquet I/O + DuckDB query helpers
-  analytics.py         SQL-based summary computation
-  report.py            Static HTML report generation (Plotly + Jinja2)
-  providers/
-    __init__.py        TrackMatch dataclass, normalize(), match_confidence()
-    deezer.py          Deezer API (10 req/s, no auth)
-    itunes.py          iTunes Search API (0.33 req/s, no auth)
-    spotify_provider.py  Spotify API via spotipy (client credentials)
+scrape ──> enrich ──> analyze ──> report
+ HTML       APIs       SQL        HTML
 ```
 
-## Data
+**Scraping** is async (`httpx` + `asyncio`) with semaphore-limited concurrency. Radio 357's playlist paywall is client-side JavaScript only — the raw HTTP response contains all songs. Each day's page is parsed with BeautifulSoup, extracting program groups (`.programGroup` headers) and songs (`.programGroupSong` elements). The scraper finds the earliest available date via binary search and only fetches days not already in storage.
 
-All data lives in `data/` (gitignored):
+**Enrichment** deduplicates (artist, title) pairs from the playlist (334k plays → ~84k unique pairs) and resolves each against music provider APIs. Providers are tried in sequence — Deezer first (fastest, no auth, 10 req/s), then iTunes (has genre data, 0.33 req/s), then Spotify (optional, needs credentials). Each provider processes all remaining unmatched pairs before passing its misses to the next. This avoids wasting slow providers on tracks that faster ones already found.
 
-| File | Description |
-|------|-------------|
-| `playlist.parquet` | One row per song play (date, time, program, artist, title, track_id) |
-| `tracks.parquet` | One row per unique track (matched metadata from providers) |
-| `analytics/*.parquet` | Precomputed daily, weekly, program, and decade summaries |
+**Analytics** joins playlist plays with track metadata in DuckDB to produce daily, weekly, program, genre, and release decade summaries — all written as Parquet files.
 
-Report output: `docs/index.html` (committed, served via GitHub Pages).
+**Reporting** generates a single self-contained HTML file with embedded Plotly charts and inline data. No server, no API calls — the report works as a static file served via GitHub Pages.
 
-## Enrichment pipeline
+### Data model
 
-Providers are tried in order: **Deezer** (fastest, no auth) -> **iTunes** (has genre data) -> **Spotify** (optional, needs credentials). Each provider processes all remaining unmatched pairs before passing misses to the next.
+Two core tables, separated to avoid redundant API calls (the same song can appear hundreds of times in the playlist):
 
-Match quality is controlled by confidence scoring (40% artist similarity + 60% title similarity via `SequenceMatcher`). Tracks below 0.6 confidence are rejected. Name normalization strips diacritics and featuring tags before comparison.
+```
+playlist.parquet                   tracks.parquet
+┌──────────────────────┐           ┌──────────────────────────┐
+│ date       (Date)    │           │ track_id      (Utf8)  PK │
+│ time       (Utf8)    │     ┌────>│ artist        (Utf8)     │
+│ program    (Utf8)    │     │     │ title         (Utf8)     │
+│ artist     (Utf8)    │     │     │ matched_artist (Utf8)    │
+│ title      (Utf8)    │     │     │ matched_title  (Utf8)    │
+│ track_id   (Utf8) ───┼─────┘     │ duration_ms   (Int64)   │
+└──────────────────────┘           │ explicit      (Boolean)  │
+                                   │ album         (Utf8)     │
+                                   │ release_date  (Utf8)     │
+                                   │ genre         (Utf8)     │
+                                   │ source        (Utf8)     │
+                                   │ confidence    (Float64)  │
+                                   └──────────────────────────┘
+```
 
-After enrichment, a genre backfill pass uses iTunes to fill in genres for tracks found by Deezer or Spotify (which don't return genre in search results).
+Both `artist`/`title` (as scraped from the radio) and `matched_artist`/`matched_title` (as returned by the provider) are stored, since radio names and provider names frequently differ (diacritics, featuring tags, spelling variations).
+
+### Match quality
+
+Providers return multiple candidates per search. Each is scored using `SequenceMatcher` with weighted similarity: 40% artist + 60% title. Before comparison, names are normalized — unicode diacritics are decomposed, `feat`/`ft`/`featuring` tags stripped, parenthetical suffixes removed, and whitespace collapsed. Matches below 0.6 confidence are rejected.
+
+### Rate limiting and resilience
+
+Each provider has a token-bucket rate limiter calibrated to its documented limits. Enrichment saves progress to disk every 500 tracks, so a crash or rate ban doesn't lose hours of work. Providers handle bans differently:
+
+- **Deezer**: returns 200 with error code 4 on quota — backs off exponentially (5s, 10s, 20s)
+- **iTunes**: returns 429/403 — backs off (10s, 20s, 40s)
+- **Spotify**: on any 429, the provider disables itself globally for the rest of the session to avoid extended bans
+
+### Stack
+
+| Layer | Tool | Why |
+|-------|------|-----|
+| Scraping | httpx + asyncio + BeautifulSoup | Async HTTP with semaphore concurrency, lxml parser for speed |
+| Storage | Polars + Parquet | Columnar format, fast aggregation, no database server needed |
+| Analytics | DuckDB | SQL over Parquet files, single-process, joins playlist with tracks |
+| Reporting | Plotly + Jinja2 | Interactive charts embedded as JSON in a static HTML file |
+| CLI | Click | Subcommands with shared options (`-v` for debug logging) |
