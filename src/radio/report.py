@@ -274,6 +274,38 @@ _TEMPLATE = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Year over year -->
+    <div class="section">
+      <h2 data-en="Year over Year" data-pl="Porównanie roczne"></h2>
+      <table>
+        <thead>
+          <tr>
+            <th data-en="Year" data-pl="Rok"></th>
+            <th class="count" data-en="Plays" data-pl="Odtworzeń"></th>
+            <th class="count" data-en="Songs" data-pl="Utworów"></th>
+            <th class="count" data-en="Artists" data-pl="Artystów"></th>
+            <th class="count" data-en="Avg/Day" data-pl="Śr./dzień"></th>
+            <th class="count" data-en="Music %" data-pl="Muzyka %"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in yearly_stats %}
+          <tr{% if row.is_current %} style="color: #fca5a5;"{% endif %}>
+            <td>{{ row.year }}{% if row.partial %} *{% endif %}</td>
+            <td class="count">{{ row.plays }}</td>
+            <td class="count">{{ row.songs }}</td>
+            <td class="count">{{ row.artists }}</td>
+            <td class="count">{{ row.avg_per_day }}</td>
+            <td class="count">{{ row.music_pct }}%</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if yearly_stats and yearly_stats[-1].partial %}
+      <p class="section-desc" style="margin-top: 0.75rem;">* <span data-en="Partial year" data-pl="Niepełny rok"></span></p>
+      {% endif %}
+    </div>
+
     <!-- Songs per day -->
     <div class="section">
       <h2 data-en="Songs Per Day" data-pl="Utwory dziennie"></h2>
@@ -784,6 +816,26 @@ def generate_report() -> None:
 
     avg_music_pct = str(round(daily["music_pct"].drop_nulls().mean(), 1))
 
+    # Year-over-year stats
+    current_year = datetime.date.today().year
+    yearly_stats = []
+    if playlist is not None and not playlist.is_empty():
+        for year in sorted(playlist["date"].dt.year().unique().to_list()):
+            yp = playlist.filter(pl.col("date").dt.year() == year)
+            yd = daily.filter(pl.col("date").dt.year() == year)
+            if yp.is_empty():
+                continue
+            yearly_stats.append({
+                "year": year,
+                "plays": f"{len(yp):,}",
+                "songs": f"{yp.select(['artist', 'title']).unique().height:,}",
+                "artists": f"{yp['artist'].n_unique():,}",
+                "avg_per_day": str(round(yd["total_songs"].mean())) if not yd.is_empty() else "—",
+                "music_pct": str(round(yd["music_pct"].mean(), 1)) if not yd.is_empty() else "—",
+                "partial": year == current_year or year == int(playlist["date"].min().year),
+                "is_current": year == current_year,
+            })
+
     fig_songs_per_day = _songs_per_day_figure(daily)
     fig_music_pct = _music_pct_figure(daily)
 
@@ -822,6 +874,8 @@ def generate_report() -> None:
 
     template = Template(_TEMPLATE)
     html = template.render(
+        # Year over year
+        yearly_stats=yearly_stats,
         # Stats
         total_plays=total_plays,
         unique_songs=unique_songs,
