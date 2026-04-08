@@ -130,6 +130,11 @@ _TEMPLATE = """<!DOCTYPE html>
     </header>
 
     <div class="section">
+      <h2>Songs Per Day</h2>
+      <div id="chart-songs-per-day" class="chart-container"></div>
+    </div>
+
+    <div class="section">
       <h2>Music vs Talk Time</h2>
       <div id="chart-music-pct" class="chart-container"></div>
     </div>
@@ -230,6 +235,7 @@ _TEMPLATE = """<!DOCTYPE html>
       Plotly.newPlot(id, data, layout, { responsive: true, displayModeBar: false });
     }
 
+    plot('chart-songs-per-day', {{ fig_songs_per_day | safe }});
     plot('chart-music-pct', {{ fig_music_pct | safe }});
     plot('chart-unique-ratio', {{ fig_unique_ratio | safe }});
     plot('chart-new-song', {{ fig_new_song | safe }});
@@ -251,6 +257,42 @@ def _load_parquet(path: Path) -> pl.DataFrame | None:
 
 def _fig_to_json(fig: go.Figure) -> str:
     return pio.to_json(fig)
+
+
+def _songs_per_day_figure(daily: pl.DataFrame) -> go.Figure:
+    daily_sorted = daily.sort("date")
+    dates = daily_sorted["date"].to_list()
+    total = daily_sorted["total_songs"].to_list()
+
+    rolling = (
+        daily_sorted.with_columns(
+            pl.col("total_songs").cast(pl.Float64)
+            .rolling_mean(window_size=7, min_samples=1)
+            .alias("rolling_7d")
+        )["rolling_7d"]
+        .to_list()
+    )
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=dates, y=total, mode="lines", name="Daily",
+            line={"color": "#6366f1", "width": 1}, opacity=0.5,
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=dates, y=rolling, mode="lines", name="7-day avg",
+            line={"color": "#a78bfa", "width": 2.5},
+        )
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        yaxis_title="Songs",
+        xaxis_title="Date",
+        legend={"orientation": "h", "y": -0.2},
+    )
+    return fig
 
 
 def _music_pct_figure(daily: pl.DataFrame) -> go.Figure:
@@ -451,6 +493,7 @@ def generate_report() -> None:
         print("No daily_summary data found — run analytics first.")
         return
 
+    fig_songs_per_day = _songs_per_day_figure(daily)
     fig_music_pct = _music_pct_figure(daily)
 
     if eclecticity is not None and not eclecticity.is_empty():
@@ -496,6 +539,7 @@ def generate_report() -> None:
 
     template = Template(_TEMPLATE)
     html = template.render(
+        fig_songs_per_day=_fig_to_json(fig_songs_per_day),
         fig_music_pct=_fig_to_json(fig_music_pct),
         fig_unique_ratio=_fig_to_json(fig_unique_ratio),
         fig_new_song=_fig_to_json(fig_new_song),
