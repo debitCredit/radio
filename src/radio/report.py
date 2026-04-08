@@ -167,10 +167,6 @@ _TEMPLATE = """<!DOCTYPE html>
       <div id="chart-decades" class="chart-container"></div>
     </div>
 
-    <div class="section">
-      <h2>Show Breakdown</h2>
-      <div id="chart-shows" class="chart-container"></div>
-    </div>
 
     <div class="section">
       <h2>Most Played Artists</h2>
@@ -242,7 +238,6 @@ _TEMPLATE = """<!DOCTYPE html>
     plot('chart-hhi', {{ fig_hhi | safe }});
     plot('chart-genres', {{ fig_genres | safe }});
     plot('chart-decades', {{ fig_decades | safe }});
-    plot('chart-shows', {{ fig_shows | safe }});
   </script>
 </body>
 </html>
@@ -434,29 +429,6 @@ def _genres_figure(genre_summary: pl.DataFrame, n: int = 25) -> go.Figure:
     return fig
 
 
-def _shows_figure(show_summary: pl.DataFrame) -> go.Figure:
-    shows_sorted = show_summary.sort("total_plays", descending=False)
-    shows = shows_sorted["program"].to_list()
-    plays = shows_sorted["total_plays"].to_list()
-
-    fig = go.Figure(
-        go.Bar(
-            x=plays,
-            y=shows,
-            orientation="h",
-            marker_color="#0ea5e9",
-            marker_line_color="#38bdf8",
-            marker_line_width=1,
-        )
-    )
-    fig.update_layout(
-        template="plotly_dark",
-        xaxis_title="Total Plays",
-        yaxis_title="Show",
-        height=max(350, len(shows) * 28 + 80),
-    )
-    return fig
-
 
 def _top_artists(playlist: pl.DataFrame, n: int = 20) -> list[dict]:
     result = (
@@ -483,7 +455,6 @@ def _top_songs(playlist: pl.DataFrame, n: int = 20) -> list[dict]:
 
 def generate_report() -> None:
     daily = _load_parquet(storage.ANALYTICS_DIR / "daily_summary.parquet")
-    show_summary = _load_parquet(storage.ANALYTICS_DIR / "program_summary.parquet")
     decades = _load_parquet(storage.ANALYTICS_DIR / "release_decade_summary.parquet")
     genre_summary = _load_parquet(storage.ANALYTICS_DIR / "genre_summary.parquet")
     eclecticity = _load_parquet(storage.ANALYTICS_DIR / "eclecticity.parquet")
@@ -525,11 +496,6 @@ def generate_report() -> None:
     else:
         fig_decades = go.Figure()
 
-    if show_summary is not None and not show_summary.is_empty():
-        fig_shows = _shows_figure(show_summary)
-    else:
-        fig_shows = go.Figure()
-
     if playlist is not None and not playlist.is_empty():
         top_artists = _top_artists(playlist)
         top_songs = _top_songs(playlist)
@@ -546,7 +512,6 @@ def generate_report() -> None:
         fig_hhi=_fig_to_json(fig_hhi),
         fig_genres=_fig_to_json(fig_genres),
         fig_decades=_fig_to_json(fig_decades),
-        fig_shows=_fig_to_json(fig_shows),
         top_artists=top_artists,
         top_songs=top_songs,
     )
