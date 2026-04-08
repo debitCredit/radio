@@ -324,7 +324,7 @@ _TEMPLATE = """<!DOCTYPE html>
         <tbody>
           {% for row in period_comparison %}
           <tr{% if row.highlight %} style="color: #fca5a5;"{% endif %}>
-            <td>{{ row.label }}</td>
+            <td data-en="{{ row.label_en }}" data-pl="{{ row.label_pl }}"></td>
             <td class="count">{{ row.plays }}</td>
             <td class="count">{{ row.avg_per_day }}</td>
             <td class="count">{{ row.music_pct }}%</td>
@@ -891,16 +891,17 @@ def generate_report() -> None:
         prev_start = datetime.date(cur_year - 1, period_start_month, 1)
         prev_end = datetime.date(cur_year - 1, today.month, today.day)
 
-        for label, start, end, highlight in [
-            (f"Mar–Apr {cur_year - 1}", prev_start, prev_end, False),
-            (f"Mar–Apr {cur_year}", period_start, period_end, True),
+        for label_en, label_pl, start, end, highlight in [
+            (f"Mar–Apr {cur_year - 1}", f"mar–kwi {cur_year - 1}", prev_start, prev_end, False),
+            (f"Mar–Apr {cur_year}", f"mar–kwi {cur_year}", period_start, period_end, True),
         ]:
             pp = playlist.filter((pl.col("date") >= start) & (pl.col("date") <= end))
             pd_ = daily.filter((pl.col("date") >= start) & (pl.col("date") <= end))
             if pp.is_empty():
                 continue
             period_comparison.append({
-                "label": label,
+                "label_en": label_en,
+                "label_pl": label_pl,
                 "plays": f"{len(pp):,}",
                 "avg_per_day": str(round(pd_["total_songs"].mean())) if not pd_.is_empty() else "—",
                 "music_pct": str(round(pd_["music_pct"].mean(), 1)) if not pd_.is_empty() else "—",
