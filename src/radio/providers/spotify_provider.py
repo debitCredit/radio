@@ -95,16 +95,48 @@ def _search_with_retry(
             return sp.search(q=query, type="track", limit=1)
         except SpotifyException as exc:
             if exc.http_status == 429:
-                retry_after = int(exc.headers.get("Retry-After", 5)) if exc.headers else 5
+                # spotipy may swallow the real Retry-After; parse from headers or msg
+                retry_after = _parse_retry_after(exc)
                 if retry_after > MAX_RETRY_AFTER:
                     logger.error("spotify rate_ban retry_after=%ds — stopping", retry_after)
                     raise RateBanError(f"Retry-After {retry_after}s")
                 logger.warning("spotify rate_limited retry_after=%ds", retry_after)
                 time.sleep(retry_after)
+            elif exc.http_status == -1 or "Max Retries" in str(exc):
+                # spotipy exhausted its internal retries — likely a ban
+                logger.error("spotify max_retries_reached — treating as ban")
+                raise RateBanError("Max retries reached")
             elif attempt < retries - 1:
                 logger.warning("spotify search_error attempt=%d/%d error=%s", attempt + 1, retries, exc)
                 time.sleep(2 ** attempt)
             else:
                 logger.error("spotify search_failed query=%r error=%s", query, exc)
                 return None
+        except Exception as exc:
+            if "Max Retries" in str(exc) or "rate limit" in str(exc).lower():
+                logger.error("spotify connection_error — treating as ban: %s", exc)
+                raise RateBanError(str(exc))
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            logger.error("spotify unexpected_error query=%r error=%s", query, exc)
+            return None
     return None
+
+
+def _parse_retry_after(exc: SpotifyException) -> int:
+    """Extract Retry-After from SpotifyException headers or message."""
+    if exc.headers:
+        val = exc.headers.get("Retry-After") or exc.headers.get("retry-after")
+        if val:
+            try:
+                return int(val)
+            except ValueError:
+                pass
+    # Try to parse from error message
+    msg = str(exc)
+    import re
+    match = re.search(r"(\d+)\s*s", msg)
+    if match:
+        return int(match.group(1))
+    return 5

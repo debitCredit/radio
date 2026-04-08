@@ -30,6 +30,10 @@ def cli(verbose: bool) -> None:
         datefmt="%H:%M:%S",
         level=level,
     )
+    # Suppress noisy third-party loggers
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("spotipy").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
 @cli.command()
