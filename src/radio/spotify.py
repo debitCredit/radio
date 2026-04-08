@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import re
 import time
+import unicodedata
 
 import polars as pl
 import spotipy
@@ -69,19 +71,38 @@ def enrich_tracks(pairs: tuple[tuple[str, str], ...]) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=TRACKS_SCHEMA)
 
 
+def _normalize(text: str) -> str:
+    """Normalize text for Spotify search: strip diacritics, feat/ft tags, extra whitespace."""
+    # Decompose unicode and drop combining marks (accents)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    # Remove feat./ft./featuring and everything after in parentheses or brackets
+    text = re.sub(r"\s*[\(\[](feat\.?|ft\.?|featuring)\b[^\)\]]*[\)\]]", "", text, flags=re.IGNORECASE)
+    # Remove standalone feat./ft. and everything after
+    text = re.sub(r"\s*(feat\.?|ft\.?|featuring)\s+.*$", "", text, flags=re.IGNORECASE)
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def _enrich_one(
     sp: spotipy.Spotify,
     artist: str,
     title: str,
 ) -> dict | None:
-    query = f"track:{title} artist:{artist}"
+    normalized_query = f"track:{_normalize(title)} artist:{_normalize(artist)}"
+    original_query = f"track:{title} artist:{artist}"
+    queries = (normalized_query,) if normalized_query == original_query else (normalized_query, original_query)
 
-    result = _search_with_retry(sp, query)
-    if result is None:
-        return None
-
-    items = result.get("tracks", {}).get("items", [])
-    if not items:
+    # Try normalized first, fall back to original if diacritics matter
+    for query in queries:
+        result = _search_with_retry(sp, query)
+        if result is None:
+            continue
+        items = result.get("tracks", {}).get("items", [])
+        if items:
+            break
+    else:
         return None
 
     track = items[0]
