@@ -100,7 +100,9 @@ def _request(params: dict, retries: int = 3) -> dict | None:
                 continue
 
             resp.raise_for_status()
-            return resp.json()
+            body = resp.json()
+            logger.debug("itunes status=%d results=%d q=%s", resp.status_code, len(body.get("results", [])), params.get("term", ""))
+            return body
 
         except httpx.HTTPError as exc:
             if attempt < retries - 1:

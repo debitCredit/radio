@@ -142,7 +142,7 @@ def _run_provider(
                 misses.append((artist, title))
             return
         except Exception as exc:
-            plog.debug("error artist=%r title=%r error=%s", artist, title, exc)
+            plog.warning("error artist=%r title=%r error=%s", artist, title, exc)
             with misses_lock:
                 misses.append((artist, title))
             return
@@ -156,7 +156,9 @@ def _run_provider(
                     misses.append((artist, title))
 
             counters["completed"] += 1
-            if counters["completed"] % 500 == 0 or counters["completed"] == total:
+            # Log every 50 for slow providers, every 500 for fast ones
+            log_interval = 50 if provider.rate < 1 else 500
+            if counters["completed"] % log_interval == 0 or counters["completed"] == total:
                 logger.info(
                     "progress=%d/%d matched=%d provider=%s",
                     counters["completed"], total,
