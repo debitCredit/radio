@@ -17,25 +17,31 @@ PLAYLIST_SCHEMA: dict[str, pl.PolarsDataType] = {
     "program": pl.Utf8,
     "artist": pl.Utf8,
     "title": pl.Utf8,
-    "spotify_track_id": pl.Utf8,
+    "track_id": pl.Utf8,
 }
 
 TRACKS_SCHEMA: dict[str, pl.PolarsDataType] = {
-    "spotify_track_id": pl.Utf8,
+    "track_id": pl.Utf8,
     "artist": pl.Utf8,
     "title": pl.Utf8,
-    "spotify_artist": pl.Utf8,
-    "spotify_title": pl.Utf8,
+    "matched_artist": pl.Utf8,
+    "matched_title": pl.Utf8,
     "duration_ms": pl.Int64,
     "explicit": pl.Boolean,
     "album": pl.Utf8,
     "release_date": pl.Utf8,
+    "genre": pl.Utf8,
+    "source": pl.Utf8,
 }
 
 
 def load_playlist() -> pl.DataFrame:
     if PLAYLIST_PATH.exists():
-        return pl.read_parquet(PLAYLIST_PATH)
+        df = pl.read_parquet(PLAYLIST_PATH)
+        # Migrate old schema
+        if "spotify_track_id" in df.columns and "track_id" not in df.columns:
+            df = df.rename({"spotify_track_id": "track_id"})
+        return df
     return pl.DataFrame(schema=PLAYLIST_SCHEMA)
 
 
@@ -53,7 +59,20 @@ def get_scraped_dates() -> frozenset[datetime.date]:
 
 def load_tracks() -> pl.DataFrame:
     if TRACKS_PATH.exists():
-        return pl.read_parquet(TRACKS_PATH)
+        df = pl.read_parquet(TRACKS_PATH)
+        # Migrate old schema
+        if "spotify_track_id" in df.columns and "track_id" not in df.columns:
+            df = df.rename({"spotify_track_id": "track_id"})
+        if "spotify_artist" in df.columns and "matched_artist" not in df.columns:
+            df = df.rename({"spotify_artist": "matched_artist"})
+        if "spotify_title" in df.columns and "matched_title" not in df.columns:
+            df = df.rename({"spotify_title": "matched_title"})
+        # Add missing columns
+        if "genre" not in df.columns:
+            df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias("genre"))
+        if "source" not in df.columns:
+            df = df.with_columns(pl.lit("spotify").alias("source"))
+        return df
     return pl.DataFrame(schema=TRACKS_SCHEMA)
 
 

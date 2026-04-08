@@ -19,7 +19,7 @@ _DAILY_SQL = """
         (SUM(t.duration_ms) / 1000.0 / 60.0) / 1440.0 * 100 AS music_pct,
         SUM(CASE WHEN t.explicit THEN 1 ELSE 0 END) AS explicit_count
     FROM playlist p
-    LEFT JOIN tracks t ON p.spotify_track_id = t.spotify_track_id
+    LEFT JOIN tracks t ON p.track_id = t.track_id
     GROUP BY p.date
     ORDER BY p.date
 """
@@ -37,7 +37,7 @@ _WEEKLY_SQL = """
         (SUM(t.duration_ms) / 1000.0 / 60.0) / (COUNT(DISTINCT p.date) * 1440.0) * 100 AS music_pct,
         SUM(CASE WHEN t.explicit THEN 1 ELSE 0 END) AS explicit_count
     FROM playlist p
-    LEFT JOIN tracks t ON p.spotify_track_id = t.spotify_track_id
+    LEFT JOIN tracks t ON p.track_id = t.track_id
     GROUP BY iso_year, iso_week
     ORDER BY iso_year, iso_week
 """
@@ -50,7 +50,7 @@ _PROGRAM_SQL = """
         COUNT(DISTINCT p.artist) AS unique_artists,
         SUM(CASE WHEN t.explicit THEN 1 ELSE 0 END) AS explicit_count
     FROM playlist p
-    LEFT JOIN tracks t ON p.spotify_track_id = t.spotify_track_id
+    LEFT JOIN tracks t ON p.track_id = t.track_id
     GROUP BY p.program
     ORDER BY p.program
 """
@@ -61,7 +61,7 @@ _DECADES_SQL = """
         COUNT(*) AS play_count,
         COUNT(DISTINCT p.artist || ' - ' || p.title) AS unique_songs
     FROM playlist p
-    JOIN tracks t ON p.spotify_track_id = t.spotify_track_id
+    JOIN tracks t ON p.track_id = t.track_id
     WHERE t.release_date IS NOT NULL AND LENGTH(t.release_date) >= 4
     GROUP BY decade
     ORDER BY decade

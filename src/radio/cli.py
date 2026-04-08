@@ -9,8 +9,13 @@ import httpx
 import polars as pl
 
 from radio import analytics, storage
+from radio.enrichment import (
+    backfill_genres,
+    enrich_tracks,
+    get_unenriched_pairs,
+    update_playlist_with_track_ids,
+)
 from radio.scraper import SongPlay, find_earliest_date, scrape_range
-from radio.spotify import enrich_tracks, get_unenriched_pairs, update_playlist_with_track_ids
 
 log = logging.getLogger("radio.cli")
 
@@ -72,7 +77,7 @@ def scrape(from_date: str | None, to_date: str | None) -> None:
                 "program": p.program,
                 "artist": p.artist,
                 "title": p.title,
-                "spotify_track_id": None,
+                "track_id": None,
             }
             for p in plays
         ],
@@ -91,7 +96,7 @@ def scrape(from_date: str | None, to_date: str | None) -> None:
 
 @cli.command()
 def enrich() -> None:
-    """Run Spotify enrichment on unenriched tracks."""
+    """Enrich tracks using iTunes, Deezer, and Spotify in parallel."""
     playlist_df = storage.load_playlist()
     tracks_df = storage.load_tracks()
 
@@ -103,29 +108,25 @@ def enrich() -> None:
 
     log.info("enriching pairs=%d", len(pairs))
 
-    # Accumulate all saved tracks for the final playlist update
-    all_saved: list[pl.DataFrame] = []
-
     def _save_batch(batch: pl.DataFrame) -> None:
         nonlocal tracks_df
-        all_saved.append(batch)
         tracks_df = pl.concat([tracks_df, batch]) if not tracks_df.is_empty() else batch
         storage.save_tracks(tracks_df)
 
     remaining = enrich_tracks(pairs, on_batch=_save_batch)
 
     if not remaining.is_empty():
-        all_saved.append(remaining)
         tracks_df = pl.concat([tracks_df, remaining]) if not tracks_df.is_empty() else remaining
         storage.save_tracks(tracks_df)
 
-    if all_saved:
-        new_tracks = pl.concat(all_saved)
-        updated_playlist = update_playlist_with_track_ids(playlist_df, tracks_df)
-        storage.save_playlist(updated_playlist)
-        log.info("enriched=%d/%d tracks_total=%d", len(new_tracks), len(pairs), len(tracks_df))
-    else:
-        log.info("no tracks matched on Spotify (0/%d)", len(pairs))
+    # Backfill genres for tracks found by providers that don't return genre
+    tracks_df = backfill_genres(tracks_df, on_save=storage.save_tracks)
+
+    # Update playlist with track IDs
+    updated_playlist = update_playlist_with_track_ids(playlist_df, tracks_df)
+    storage.save_playlist(updated_playlist)
+
+    log.info("enrichment_complete tracks_total=%d", len(tracks_df))
 
 
 @cli.command()
@@ -166,9 +167,15 @@ def stats() -> None:
     print(f"Unique songs:    {unique_songs}")
 
     if storage.TRACKS_PATH.exists():
-        enriched = playlist["spotify_track_id"].drop_nulls().len()
+        tracks = storage.load_tracks()
+        enriched = playlist["track_id"].drop_nulls().len()
         coverage = enriched / total_songs * 100 if total_songs else 0.0
         print(f"Enrichment:      {enriched}/{total_songs} ({coverage:.1f}%)")
+
+        if "source" in tracks.columns:
+            source_counts = tracks.group_by("source").agg(pl.len().alias("count")).sort("count", descending=True)
+            for row in source_counts.iter_rows(named=True):
+                print(f"  {row['source']}: {row['count']}")
 
     daily_path = storage.ANALYTICS_DIR / "daily_summary.parquet"
     if daily_path.exists():
