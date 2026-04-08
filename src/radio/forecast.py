@@ -32,6 +32,7 @@ def _fit_prophet(df: pl.DataFrame, changepoint_prior: float = 0.1) -> Prophet:
     m = Prophet(
         changepoint_prior_scale=changepoint_prior,
         changepoint_range=1.0,  # analyze full history, not forecasting
+        n_changepoints=50,  # default 25 is too sparse for 1400+ days
         yearly_seasonality=True,
         weekly_seasonality=True,
         daily_seasonality=False,
