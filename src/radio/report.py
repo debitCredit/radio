@@ -238,8 +238,8 @@ _TEMPLATE = """<!DOCTYPE html>
       <h1>Radio 357 Analytics</h1>
       <p data-en="Data-driven analysis of Radio 357 playlists since 2022" data-pl="Analiza danych playlist Radia 357 od 2022 roku"></p>
       <div class="lang-toggle">
-        <button id="btn-en" class="active" onclick="setLang('en')">English</button>
-        <button id="btn-pl" onclick="setLang('pl')">Polski</button>
+        <button id="btn-en" onclick="setLang('en')">English</button>
+        <button id="btn-pl" class="active" onclick="setLang('pl')">Polski</button>
       </div>
     </header>
 
@@ -510,7 +510,7 @@ _TEMPLATE = """<!DOCTYPE html>
 
   <script>
     // i18n
-    var currentLang = 'en';
+    var currentLang = 'pl';
     var traceLabels = {
       'Daily': 'Dziennie',
       '7-day avg': 'Śr. 7 dni',
@@ -624,8 +624,8 @@ _TEMPLATE = """<!DOCTYPE html>
     plot('chart-genres', {{ fig_genres | safe }});
     plot('chart-decades', {{ fig_decades | safe }});
 
-    // Initialize text from data-en attributes on load
-    setLang('en');
+    // Initialize with Polish as default
+    setLang('pl');
   </script>
 </body>
 </html>
