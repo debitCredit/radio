@@ -2,20 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 
 import click
+import httpx
 import polars as pl
 
 from radio import analytics, storage
 from radio.scraper import SongPlay, find_earliest_date, scrape_range
 from radio.spotify import enrich_tracks, get_unenriched_pairs, update_playlist_with_track_ids
 
-import httpx
-
 
 @click.group()
-def cli() -> None:
+@click.option("-v", "--verbose", is_flag=True, help="Enable debug logging")
+def cli(verbose: bool) -> None:
     """Radio 357 playlist tools."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%H:%M:%S",
+        level=level,
+    )
 
 
 @cli.command()
@@ -23,6 +30,7 @@ def cli() -> None:
 @click.option("--to", "to_date", default=None, help="End date YYYY-MM-DD")
 def scrape(from_date: str | None, to_date: str | None) -> None:
     """Scrape playlist data from radio357.pl."""
+    log = logging.getLogger("radio.cli")
     yesterday = datetime.date.today() - datetime.timedelta(days=1)
 
     async def _resolve_earliest() -> datetime.date:
@@ -30,32 +38,28 @@ def scrape(from_date: str | None, to_date: str | None) -> None:
             return await find_earliest_date(client)
 
     if from_date is None and to_date is None:
-        print("Finding earliest available date...")
+        log.info("Finding earliest available date...")
         start = asyncio.run(_resolve_earliest())
         end = yesterday
     elif from_date is not None and to_date is None:
         start = datetime.date.fromisoformat(from_date)
         end = yesterday
     elif from_date is None and to_date is not None:
-        print("Finding earliest available date...")
+        log.info("Finding earliest available date...")
         start = asyncio.run(_resolve_earliest())
         end = datetime.date.fromisoformat(to_date)
     else:
         start = datetime.date.fromisoformat(from_date)
         end = datetime.date.fromisoformat(to_date)
 
-    print(f"Scraping {start} to {end}...")
-
     skip_dates = storage.get_scraped_dates()
-    if skip_dates:
-        print(f"Skipping {len(skip_dates)} already-scraped dates")
 
     plays: tuple[SongPlay, ...] = asyncio.run(
         scrape_range(start, end, skip_dates=skip_dates)
     )
 
     if not plays:
-        print("No new songs scraped.")
+        log.info("No new songs scraped")
         return
 
     new_df = pl.DataFrame(
@@ -78,9 +82,9 @@ def scrape(from_date: str | None, to_date: str | None) -> None:
     storage.save_playlist(combined)
 
     scraped_dates = sorted({p.date for p in plays})
-    print(
-        f"Scraped {len(plays)} new songs "
-        f"({scraped_dates[0]} to {scraped_dates[-1]})"
+    log.info(
+        "saved songs=%d range=%s..%s",
+        len(plays), scraped_dates[0], scraped_dates[-1],
     )
 
 

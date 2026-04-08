@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 from dataclasses import dataclass
 
 import httpx
 from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://radio357.pl/twoje-357/playlista/dzien"
 UNAVAILABLE_TEXT = "Playlista nie jest dostępna"
@@ -76,9 +79,11 @@ async def fetch_playlist(
             return parse_playlist(resp.text, date)
         except httpx.HTTPError as exc:
             if attempt < retries - 1:
-                await asyncio.sleep(2 ** attempt)
+                wait = 2 ** attempt
+                logger.warning("date=%s attempt=%d/%d error=%s retrying_in=%ds", date, attempt + 1, retries, exc, wait)
+                await asyncio.sleep(wait)
             else:
-                print(f"{date}: request failed: {exc}")
+                logger.error("date=%s error=%s status=failed", date, exc)
                 return None
 
 
@@ -92,20 +97,43 @@ async def scrape_range(
         if (d := from_date + datetime.timedelta(days=i)) not in skip_dates
     ]
 
+    total = len(dates)
+    logger.info("scrape_start from=%s to=%s total_dates=%d skipped=%d", from_date, to_date, total, (to_date - from_date).days + 1 - total)
+
     semaphore = asyncio.Semaphore(5)
     all_plays: list[SongPlay] = []
+    completed = 0
+    unavailable = 0
+    failed = 0
+    total_songs = 0
 
     async def fetch_one(client: httpx.AsyncClient, date: datetime.date) -> None:
+        nonlocal completed, unavailable, failed, total_songs
         async with semaphore:
             result = await fetch_playlist(client, date)
+            completed += 1
+
             if result is not None:
                 all_plays.extend(result)
-                print(f"{date}: {len(result)} songs")
+                total_songs += len(result)
+                logger.debug("date=%s songs=%d", date, len(result))
             else:
-                print(f"{date}: unavailable")
+                unavailable += 1
+                logger.debug("date=%s status=unavailable", date)
+
+            if completed % 50 == 0 or completed == total:
+                logger.info(
+                    "progress=%d/%d songs=%d unavailable=%d",
+                    completed, total, total_songs, unavailable,
+                )
 
     async with httpx.AsyncClient(follow_redirects=True) as client:
         await asyncio.gather(*(fetch_one(client, d) for d in dates))
+
+    logger.info(
+        "scrape_done dates=%d songs=%d unavailable=%d",
+        completed, total_songs, unavailable,
+    )
 
     return tuple(sorted(all_plays, key=lambda s: (s.date, s.time)))
 
