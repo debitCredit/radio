@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-from pathlib import Path
 
 import click
 import polars as pl
@@ -155,7 +154,6 @@ def stats() -> None:
     print(f"Unique songs:    {unique_songs}")
 
     if storage.TRACKS_PATH.exists():
-        tracks = storage.load_tracks()
         enriched = playlist["spotify_track_id"].drop_nulls().len()
         coverage = enriched / total_songs * 100 if total_songs else 0.0
         print(f"Enrichment:      {enriched}/{total_songs} ({coverage:.1f}%)")

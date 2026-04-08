@@ -18,7 +18,7 @@ def _top_genre_by_group(df: pl.DataFrame, group_cols: list[str]) -> pl.DataFrame
             top = max(set(all_genres), key=all_genres.count)
         else:
             top = None
-        row = dict(zip(group_cols, key if len(group_cols) > 1 else [key]))
+        row = dict(zip(group_cols, key))
         row["top_genre"] = top
         rows.append(row)
 
@@ -76,9 +76,10 @@ def compute_weekly_summary() -> pl.DataFrame:
             COUNT(*) AS total_songs,
             COUNT(DISTINCT p.artist || ' - ' || p.title) AS unique_songs,
             COUNT(DISTINCT p.artist) AS unique_artists,
+            COUNT(DISTINCT p.date) AS days_in_week,
             SUM(t.duration_ms) / 1000.0 / 60.0 AS music_minutes,
-            1440.0 - SUM(t.duration_ms) / 1000.0 / 60.0 AS talk_minutes,
-            (SUM(t.duration_ms) / 1000.0 / 60.0) / 1440.0 * 100 AS music_pct,
+            COUNT(DISTINCT p.date) * 1440.0 - SUM(t.duration_ms) / 1000.0 / 60.0 AS talk_minutes,
+            (SUM(t.duration_ms) / 1000.0 / 60.0) / (COUNT(DISTINCT p.date) * 1440.0) * 100 AS music_pct,
             AVG(t.energy) AS avg_energy,
             AVG(t.danceability) AS avg_danceability,
             AVG(t.valence) AS avg_valence,

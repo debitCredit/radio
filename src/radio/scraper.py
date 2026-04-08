@@ -31,7 +31,7 @@ def parse_playlist(html: str, date: datetime.date) -> tuple[SongPlay, ...] | Non
     # Iterate linearly: h3 updates current program, songs inherit it.
     container = soup.find(class_="programGroup")
     if not container:
-        return tuple()
+        return None
 
     current_program = ""
     for element in container.children:
@@ -66,12 +66,20 @@ def parse_playlist(html: str, date: datetime.date) -> tuple[SongPlay, ...] | Non
 
 
 async def fetch_playlist(
-    client: httpx.AsyncClient, date: datetime.date
+    client: httpx.AsyncClient, date: datetime.date, retries: int = 3
 ) -> tuple[SongPlay, ...] | None:
     url = f"{BASE_URL}/{date.isoformat()}/"
-    resp = await client.get(url)
-    resp.raise_for_status()
-    return parse_playlist(resp.text, date)
+    for attempt in range(retries):
+        try:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return parse_playlist(resp.text, date)
+        except httpx.HTTPError as exc:
+            if attempt < retries - 1:
+                await asyncio.sleep(2 ** attempt)
+            else:
+                print(f"{date}: request failed: {exc}")
+                return None
 
 
 async def scrape_range(
@@ -80,9 +88,8 @@ async def scrape_range(
     skip_dates: frozenset[datetime.date] = frozenset(),
 ) -> tuple[SongPlay, ...]:
     dates = [
-        from_date + datetime.timedelta(days=i)
-        for i in range((to_date - from_date).days + 1)
-        if (from_date + datetime.timedelta(days=i)) not in skip_dates
+        d for i in range((to_date - from_date).days + 1)
+        if (d := from_date + datetime.timedelta(days=i)) not in skip_dates
     ]
 
     semaphore = asyncio.Semaphore(5)
@@ -115,8 +122,9 @@ async def find_earliest_date(client: httpx.AsyncClient) -> datetime.date:
         else:
             lo = mid
 
-    # Check hi itself
-    result = await fetch_playlist(client, hi)
-    if result is not None:
-        return hi
-    return lo
+    # Check both boundary candidates
+    for candidate in (lo, hi):
+        result = await fetch_playlist(client, candidate)
+        if result is not None:
+            return candidate
+    return hi  # fallback — should not happen with valid bounds
