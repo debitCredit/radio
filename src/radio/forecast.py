@@ -57,7 +57,7 @@ def _extract_changepoints(model: Prophet) -> list[dict]:
                 "direction": "drop" if delta < 0 else "increase",
             })
 
-    return sorted(significant, key=lambda x: abs(x["delta"]), reverse=True)
+    return sorted(significant, key=lambda x: x["date"])
 
 
 def _decomposition_figure(
