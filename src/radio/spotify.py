@@ -111,26 +111,37 @@ def enrich_tracks(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_process, a, t): (a, t) for a, t in pairs}
 
-        for future in as_completed(futures):
-            artist, title = futures[future]
-            row = future.result()
+        try:
+            for future in as_completed(futures):
+                artist, title = futures[future]
+                try:
+                    row = future.result()
+                except RateBanError:
+                    logger.warning("rate ban hit — cancelling remaining futures and saving progress")
+                    for f in futures:
+                        f.cancel()
+                    break
 
-            with lock:
-                if row is not None:
-                    rows.append(row)
-                    counters["matched"] += 1
-                else:
-                    logger.debug("no_match artist=%r title=%r", artist, title)
+                with lock:
+                    if row is not None:
+                        rows.append(row)
+                        counters["matched"] += 1
+                    else:
+                        logger.debug("no_match artist=%r title=%r", artist, title)
 
-                counters["completed"] += 1
-                if counters["completed"] % 500 == 0 or counters["completed"] == len(pairs):
-                    logger.info(
-                        "progress=%d/%d matched=%d miss=%d",
-                        counters["completed"], len(pairs),
-                        counters["matched"], counters["completed"] - counters["matched"],
-                    )
+                    counters["completed"] += 1
+                    if counters["completed"] % 500 == 0 or counters["completed"] == len(pairs):
+                        logger.info(
+                            "progress=%d/%d matched=%d miss=%d",
+                            counters["completed"], len(pairs),
+                            counters["matched"], counters["completed"] - counters["matched"],
+                        )
 
-                _maybe_flush()
+                    _maybe_flush()
+        except KeyboardInterrupt:
+            logger.warning("interrupted — saving progress")
+            for f in futures:
+                f.cancel()
 
     if not rows:
         return pl.DataFrame(schema=TRACKS_SCHEMA)
@@ -186,7 +197,11 @@ def _enrich_one(
     }
 
 
-MAX_RETRY_AFTER = 60  # seconds — bail if Spotify asks us to wait longer
+MAX_RETRY_AFTER = 300  # 5 min — anything longer means we're banned, save and exit
+
+
+class RateBanError(Exception):
+    """Raised when Spotify's Retry-After exceeds MAX_RETRY_AFTER."""
 
 
 def _search_with_retry(
@@ -201,9 +216,9 @@ def _search_with_retry(
             if exc.http_status == 429:
                 retry_after = int(exc.headers.get("Retry-After", 5)) if exc.headers else 5
                 if retry_after > MAX_RETRY_AFTER:
-                    logger.error("rate_ban retry_after=%ds — too long, giving up", retry_after)
-                    raise SystemExit(f"Spotify rate ban: {retry_after}s. Re-run later.")
-                logger.warning("rate_limited retry_after=%ds", retry_after)
+                    logger.error("rate_ban retry_after=%ds — saving progress and stopping", retry_after)
+                    raise RateBanError(f"Retry-After {retry_after}s exceeds {MAX_RETRY_AFTER}s limit")
+                logger.warning("rate_limited retry_after=%ds — sleeping", retry_after)
                 time.sleep(retry_after)
             elif attempt < retries - 1:
                 logger.warning("search_error attempt=%d/%d query=%r error=%s", attempt + 1, retries, query, exc)
