@@ -22,19 +22,19 @@ except ImportError:
 # Spotify docs: ~250 requests per 30 seconds for client credentials
 RATE_LIMIT = 250.0 / 30.0  # req/s
 
-# Bail if Spotify asks us to wait longer than this
-MAX_RETRY_AFTER = 300
-
 
 class RateBanError(Exception):
     """Raised when Spotify's Retry-After exceeds MAX_RETRY_AFTER."""
 
 
 _client: spotipy.Spotify | None = None
+_disabled = False  # Set True after a rate ban to stop all Spotify calls
 
 
 def _get_client() -> spotipy.Spotify:
     global _client
+    if _disabled:
+        raise RateBanError("Spotify disabled due to rate ban")
     if _client is None:
         client_id = os.environ.get("SPOTIFY_CLIENT_ID")
         client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET")
@@ -46,7 +46,9 @@ def _get_client() -> spotipy.Spotify:
 
 
 def available() -> bool:
-    """Check if Spotify credentials are configured."""
+    """Check if Spotify credentials are configured and not banned."""
+    if _disabled:
+        return False
     return bool(os.environ.get("SPOTIFY_CLIENT_ID") and os.environ.get("SPOTIFY_CLIENT_SECRET"))
 
 
@@ -99,18 +101,11 @@ def _search_with_retry(
         try:
             return sp.search(q=query, type="track", limit=1)
         except SpotifyException as exc:
-            if exc.http_status == 429:
-                # spotipy may swallow the real Retry-After; parse from headers or msg
-                retry_after = _parse_retry_after(exc)
-                if retry_after > MAX_RETRY_AFTER:
-                    logger.error("spotify rate_ban retry_after=%ds — stopping", retry_after)
-                    raise RateBanError(f"Retry-After {retry_after}s")
-                logger.warning("spotify rate_limited retry_after=%ds", retry_after)
-                time.sleep(retry_after)
-            elif exc.http_status == -1 or "Max Retries" in str(exc):
-                # spotipy exhausted its internal retries — likely a ban
-                logger.error("spotify max_retries_reached — treating as ban")
-                raise RateBanError("Max retries reached")
+            if exc.http_status == 429 or "Max Retries" in str(exc) or exc.http_status == -1:
+                global _disabled
+                _disabled = True
+                logger.error("spotify rate_limited — disabling for this session")
+                raise RateBanError("Spotify rate limited")
             elif attempt < retries - 1:
                 logger.warning("spotify search_error attempt=%d/%d error=%s", attempt + 1, retries, exc)
                 time.sleep(2 ** attempt)
@@ -119,7 +114,8 @@ def _search_with_retry(
                 return None
         except Exception as exc:
             if "Max Retries" in str(exc) or "rate limit" in str(exc).lower():
-                logger.error("spotify connection_error — treating as ban: %s", exc)
+                _disabled = True
+                logger.error("spotify connection_error — disabling: %s", exc)
                 raise RateBanError(str(exc))
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
@@ -127,21 +123,3 @@ def _search_with_retry(
             logger.error("spotify unexpected_error query=%r error=%s", query, exc)
             return None
     return None
-
-
-def _parse_retry_after(exc: SpotifyException) -> int:
-    """Extract Retry-After from SpotifyException headers or message."""
-    if exc.headers:
-        val = exc.headers.get("Retry-After") or exc.headers.get("retry-after")
-        if val:
-            try:
-                return int(val)
-            except ValueError:
-                pass
-    # Try to parse from error message
-    msg = str(exc)
-    import re
-    match = re.search(r"(\d+)\s*s", msg)
-    if match:
-        return int(match.group(1))
-    return 5
