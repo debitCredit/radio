@@ -85,12 +85,16 @@ def save_tracks(df: pl.DataFrame) -> None:
 
 
 def _make_connection() -> duckdb.DuckDBPyConnection:
-    """Create a DuckDB connection with playlist and tracks registered."""
+    """Create a DuckDB connection with playlist and tracks registered.
+
+    Uses load_playlist/load_tracks to apply schema migrations before
+    registering, so DuckDB sees the current column names.
+    """
     con = duckdb.connect()
     if PLAYLIST_PATH.exists():
-        con.register("playlist", con.read_parquet(str(PLAYLIST_PATH)))
+        con.register("playlist", load_playlist().to_arrow())
     if TRACKS_PATH.exists():
-        con.register("tracks", con.read_parquet(str(TRACKS_PATH)))
+        con.register("tracks", load_tracks().to_arrow())
     return con
 
 
