@@ -1,5 +1,7 @@
 # Radio 357 Playlist Analyzer
 
+**[Live Report](https://debitcredit.github.io/radio/)**
+
 Scrapes daily playlists from [Radio 357](https://radio357.pl), enriches tracks with metadata from multiple music providers, and generates a static analytics report.
 
 ## What it does
