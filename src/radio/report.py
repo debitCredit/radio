@@ -306,6 +306,42 @@ _TEMPLATE = """<!DOCTYPE html>
       {% endif %}
     </div>
 
+    <!-- Period comparison -->
+    {% if period_comparison %}
+    <div class="section">
+      <h2 data-en="Recent Period vs Last Year" data-pl="Ostatni okres vs rok wcześniej"></h2>
+      <p class="section-desc" data-en="Comparing the same calendar period year over year." data-pl="Porównanie tego samego okresu kalendarzowego rok do roku."></p>
+      <table>
+        <thead>
+          <tr>
+            <th data-en="Period" data-pl="Okres"></th>
+            <th class="count" data-en="Plays" data-pl="Odtworzeń"></th>
+            <th class="count" data-en="Avg/Day" data-pl="Śr./dzień"></th>
+            <th class="count" data-en="Music %" data-pl="Muzyka %"></th>
+            <th class="count" data-en="Artists" data-pl="Artystów"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in period_comparison %}
+          <tr{% if row.highlight %} style="color: #fca5a5;"{% endif %}>
+            <td>{{ row.label }}</td>
+            <td class="count">{{ row.plays }}</td>
+            <td class="count">{{ row.avg_per_day }}</td>
+            <td class="count">{{ row.music_pct }}%</td>
+            <td class="count">{{ row.artists }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if period_delta %}
+      <div class="insight-box warning">
+        <strong data-en="Year-over-year change:" data-pl="Zmiana rok do roku:"></strong>
+        <span>{{ period_delta }}</span>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+
     <!-- Songs per day -->
     <div class="section">
       <h2 data-en="Songs Per Day" data-pl="Utwory dziennie"></h2>
@@ -836,6 +872,42 @@ def generate_report() -> None:
                 "is_current": year == current_year,
             })
 
+    # Period comparison: Mar-Apr current year vs previous year
+    period_comparison = []
+    period_delta = ""
+    if playlist is not None and not playlist.is_empty():
+        today = datetime.date.today()
+        cur_year = today.year
+        period_start_month = 3  # March
+        period_start = datetime.date(cur_year, period_start_month, 1)
+        period_end = today
+
+        prev_start = datetime.date(cur_year - 1, period_start_month, 1)
+        prev_end = datetime.date(cur_year - 1, today.month, today.day)
+
+        for label, start, end, highlight in [
+            (f"Mar–Apr {cur_year - 1}", prev_start, prev_end, False),
+            (f"Mar–Apr {cur_year}", period_start, period_end, True),
+        ]:
+            pp = playlist.filter((pl.col("date") >= start) & (pl.col("date") <= end))
+            pd_ = daily.filter((pl.col("date") >= start) & (pl.col("date") <= end))
+            if pp.is_empty():
+                continue
+            period_comparison.append({
+                "label": label,
+                "plays": f"{len(pp):,}",
+                "avg_per_day": str(round(pd_["total_songs"].mean())) if not pd_.is_empty() else "—",
+                "music_pct": str(round(pd_["music_pct"].mean(), 1)) if not pd_.is_empty() else "—",
+                "artists": f"{pp['artist'].n_unique():,}",
+                "highlight": highlight,
+            })
+
+        if len(period_comparison) == 2:
+            prev_avg = float(period_comparison[0]["avg_per_day"])
+            cur_avg = float(period_comparison[1]["avg_per_day"])
+            pct_change = (cur_avg - prev_avg) / prev_avg * 100
+            period_delta = f"{pct_change:+.1f}% songs/day, {float(period_comparison[1]['music_pct']) - float(period_comparison[0]['music_pct']):+.1f}pp music share"
+
     fig_songs_per_day = _songs_per_day_figure(daily)
     fig_music_pct = _music_pct_figure(daily)
 
@@ -876,6 +948,8 @@ def generate_report() -> None:
     html = template.render(
         # Year over year
         yearly_stats=yearly_stats,
+        period_comparison=period_comparison,
+        period_delta=period_delta,
         # Stats
         total_plays=total_plays,
         unique_songs=unique_songs,
