@@ -14,7 +14,7 @@ TRACKS_PATH = DATA_DIR / "tracks.parquet"
 PLAYLIST_SCHEMA: dict[str, pl.PolarsDataType] = {
     "date": pl.Date,
     "time": pl.Utf8,
-    "show": pl.Utf8,
+    "program": pl.Utf8,
     "artist": pl.Utf8,
     "title": pl.Utf8,
     "spotify_track_id": pl.Utf8,

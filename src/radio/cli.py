@@ -64,7 +64,7 @@ def scrape(from_date: str | None, to_date: str | None) -> None:
             {
                 "date": p.date,
                 "time": p.time,
-                "show": p.show,
+                "program": p.program,
                 "artist": p.artist,
                 "title": p.title,
                 "spotify_track_id": None,

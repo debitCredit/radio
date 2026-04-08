@@ -349,7 +349,7 @@ def _genres_figure(daily: pl.DataFrame) -> go.Figure:
 
 def _shows_figure(show_summary: pl.DataFrame) -> go.Figure:
     shows_sorted = show_summary.sort("total_plays", descending=False)
-    shows = shows_sorted["show"].to_list()
+    shows = shows_sorted["program"].to_list()
     plays = shows_sorted["total_plays"].to_list()
 
     fig = go.Figure(
@@ -397,7 +397,7 @@ def _top_songs(playlist: pl.DataFrame, n: int = 20) -> list[dict]:
 def generate_report() -> None:
     daily = _load_parquet(storage.ANALYTICS_DIR / "daily_summary.parquet")
     weekly = _load_parquet(storage.ANALYTICS_DIR / "weekly_summary.parquet")
-    show_summary = _load_parquet(storage.ANALYTICS_DIR / "show_summary.parquet")
+    show_summary = _load_parquet(storage.ANALYTICS_DIR / "program_summary.parquet")
     playlist = _load_parquet(storage.PLAYLIST_PATH)
 
     if daily is None or daily.is_empty():

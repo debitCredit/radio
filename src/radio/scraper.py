@@ -15,7 +15,7 @@ UNAVAILABLE_TEXT = "Playlista nie jest dostępna"
 class SongPlay:
     date: datetime.date
     time: str  # HH:MM
-    show: str
+    program: str
     artist: str
     title: str
 
@@ -27,21 +27,27 @@ def parse_playlist(html: str, date: datetime.date) -> tuple[SongPlay, ...] | Non
     soup = BeautifulSoup(html, "lxml")
     plays: list[SongPlay] = []
 
-    for group in soup.find_all(class_="programGroup"):
-        h3 = group.find("h3")
-        if not h3:
+    # Shows are h3 headers and songs are divs within a flat container.
+    # Iterate linearly: h3 updates current program, songs inherit it.
+    container = soup.find(class_="programGroup")
+    if not container:
+        return tuple()
+
+    current_program = ""
+    for element in container.children:
+        if not hasattr(element, "name") or element.name is None:
             continue
 
-        # Strip the programGroupDate span to get the bare show name
-        date_span = h3.find("span", class_="programGroupDate")
-        if date_span:
-            date_span.extract()
-        show = h3.get_text(strip=True)
+        if element.name == "h3":
+            date_span = element.find("span", class_="programGroupDate")
+            if date_span:
+                date_span.extract()
+            current_program = element.get_text(strip=True)
 
-        for song_div in group.find_all(class_="programGroupSong"):
-            time_div = song_div.find(class_="songDate")
-            artist_h5 = song_div.find(class_="songArtis")
-            title_div = song_div.find(class_="songTitle")
+        elif "programGroupSong" in (element.get("class") or []):
+            time_div = element.find(class_="songDate")
+            artist_h5 = element.find(class_="songArtis")
+            title_div = element.find(class_="songTitle")
 
             if not (time_div and artist_h5 and title_div):
                 continue
@@ -50,7 +56,7 @@ def parse_playlist(html: str, date: datetime.date) -> tuple[SongPlay, ...] | Non
                 SongPlay(
                     date=date,
                     time=time_div.get_text(strip=True),
-                    show=show,
+                    program=current_program,
                     artist=artist_h5.get_text(strip=True),
                     title=title_div.get_text(strip=True),
                 )

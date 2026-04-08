@@ -110,10 +110,10 @@ def compute_weekly_summary() -> pl.DataFrame:
     return df
 
 
-def compute_show_summary() -> pl.DataFrame:
+def compute_program_summary() -> pl.DataFrame:
     sql = """
         SELECT
-            p.show,
+            p.program,
             COUNT(*) AS total_plays,
             COUNT(DISTINCT p.artist || ' - ' || p.title) AS unique_songs,
             COUNT(DISTINCT p.artist) AS unique_artists,
@@ -122,24 +122,24 @@ def compute_show_summary() -> pl.DataFrame:
             AVG(t.valence) AS avg_valence
         FROM playlist p
         LEFT JOIN tracks t ON p.spotify_track_id = t.spotify_track_id
-        GROUP BY p.show
-        ORDER BY p.show
+        GROUP BY p.program
+        ORDER BY p.program
     """
     base = storage.query(sql)
 
     genres_sql = """
-        SELECT p.show, t.genres
+        SELECT p.program, t.genres
         FROM playlist p
         LEFT JOIN tracks t ON p.spotify_track_id = t.spotify_track_id
         WHERE t.genres IS NOT NULL AND t.genres != ''
     """
     genres_df = storage.query(genres_sql)
-    top_genre_df = _top_genre_by_group(genres_df, ["show"])
+    top_genre_df = _top_genre_by_group(genres_df, ["program"])
 
-    df = base.join(top_genre_df, on="show", how="left")
+    df = base.join(top_genre_df, on="program", how="left")
 
     storage.ANALYTICS_DIR.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(storage.ANALYTICS_DIR / "show_summary.parquet")
+    df.write_parquet(storage.ANALYTICS_DIR / "program_summary.parquet")
     return df
 
 
@@ -152,5 +152,5 @@ def compute_all() -> None:
     weekly = compute_weekly_summary()
     print(f"weekly_summary: {len(weekly)} rows -> {storage.ANALYTICS_DIR / 'weekly_summary.parquet'}")
 
-    show = compute_show_summary()
-    print(f"show_summary: {len(show)} rows -> {storage.ANALYTICS_DIR / 'show_summary.parquet'}")
+    program = compute_program_summary()
+    print(f"program_summary: {len(program)} rows -> {storage.ANALYTICS_DIR / 'program_summary.parquet'}")
