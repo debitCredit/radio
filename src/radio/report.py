@@ -333,10 +333,10 @@ _TEMPLATE = """<!DOCTYPE html>
           {% endfor %}
         </tbody>
       </table>
-      {% if period_delta %}
+      {% if period_delta_en %}
       <div class="insight-box warning">
         <strong data-en="Year-over-year change:" data-pl="Zmiana rok do roku:"></strong>
-        <span>{{ period_delta }}</span>
+        <span data-en="{{ period_delta_en }}" data-pl="{{ period_delta_pl }}"></span>
       </div>
       {% endif %}
     </div>
@@ -874,7 +874,8 @@ def generate_report() -> None:
 
     # Period comparison: Mar-Apr current year vs previous year
     period_comparison = []
-    period_delta = ""
+    period_delta_en = ""
+    period_delta_pl = ""
     if playlist is not None and not playlist.is_empty():
         today = datetime.date.today()
         cur_year = today.year
@@ -906,7 +907,9 @@ def generate_report() -> None:
             prev_avg = float(period_comparison[0]["avg_per_day"])
             cur_avg = float(period_comparison[1]["avg_per_day"])
             pct_change = (cur_avg - prev_avg) / prev_avg * 100
-            period_delta = f"{pct_change:+.1f}% songs/day, {float(period_comparison[1]['music_pct']) - float(period_comparison[0]['music_pct']):+.1f}pp music share"
+            pp_change = float(period_comparison[1]["music_pct"]) - float(period_comparison[0]["music_pct"])
+            period_delta_en = f"{pct_change:+.1f}% songs/day, {pp_change:+.1f}pp music share"
+            period_delta_pl = f"{pct_change:+.1f}% utworów/dzień, {pp_change:+.1f}pp udziału muzyki"
 
     fig_songs_per_day = _songs_per_day_figure(daily)
     fig_music_pct = _music_pct_figure(daily)
@@ -949,7 +952,8 @@ def generate_report() -> None:
         # Year over year
         yearly_stats=yearly_stats,
         period_comparison=period_comparison,
-        period_delta=period_delta,
+        period_delta_en=period_delta_en if period_comparison else "",
+        period_delta_pl=period_delta_pl if period_comparison else "",
         # Stats
         total_plays=total_plays,
         unique_songs=unique_songs,
