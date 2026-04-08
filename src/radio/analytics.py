@@ -9,6 +9,11 @@ from radio import storage
 logger = logging.getLogger(__name__)
 
 _DAILY_SQL = """
+    WITH track_dedup AS (
+        SELECT DISTINCT ON (track_id) *
+        FROM tracks
+        ORDER BY track_id, confidence DESC NULLS LAST
+    )
     SELECT
         p.date,
         COUNT(*) AS total_songs,
@@ -19,12 +24,17 @@ _DAILY_SQL = """
         (SUM(t.duration_ms) / 1000.0 / 60.0) / 1440.0 * 100 AS music_pct,
         SUM(CASE WHEN t.explicit THEN 1 ELSE 0 END) AS explicit_count
     FROM playlist p
-    LEFT JOIN tracks t ON p.track_id = t.track_id
+    LEFT JOIN track_dedup t ON p.track_id = t.track_id
     GROUP BY p.date
     ORDER BY p.date
 """
 
 _WEEKLY_SQL = """
+    WITH track_dedup AS (
+        SELECT DISTINCT ON (track_id) *
+        FROM tracks
+        ORDER BY track_id, confidence DESC NULLS LAST
+    )
     SELECT
         EXTRACT(isoyear FROM p.date) AS iso_year,
         EXTRACT(week FROM p.date) AS iso_week,
@@ -37,12 +47,17 @@ _WEEKLY_SQL = """
         (SUM(t.duration_ms) / 1000.0 / 60.0) / (COUNT(DISTINCT p.date) * 1440.0) * 100 AS music_pct,
         SUM(CASE WHEN t.explicit THEN 1 ELSE 0 END) AS explicit_count
     FROM playlist p
-    LEFT JOIN tracks t ON p.track_id = t.track_id
+    LEFT JOIN track_dedup t ON p.track_id = t.track_id
     GROUP BY iso_year, iso_week
     ORDER BY iso_year, iso_week
 """
 
 _PROGRAM_SQL = """
+    WITH track_dedup AS (
+        SELECT DISTINCT ON (track_id) *
+        FROM tracks
+        ORDER BY track_id, confidence DESC NULLS LAST
+    )
     SELECT
         p.program,
         COUNT(*) AS total_plays,
@@ -50,31 +65,41 @@ _PROGRAM_SQL = """
         COUNT(DISTINCT p.artist) AS unique_artists,
         SUM(CASE WHEN t.explicit THEN 1 ELSE 0 END) AS explicit_count
     FROM playlist p
-    LEFT JOIN tracks t ON p.track_id = t.track_id
+    LEFT JOIN track_dedup t ON p.track_id = t.track_id
     GROUP BY p.program
     ORDER BY p.program
 """
 
 _DECADES_SQL = """
+    WITH track_dedup AS (
+        SELECT DISTINCT ON (track_id) *
+        FROM tracks
+        ORDER BY track_id, confidence DESC NULLS LAST
+    )
     SELECT
         CAST(SUBSTRING(t.release_date, 1, 3) || '0' AS VARCHAR) || 's' AS decade,
         COUNT(*) AS play_count,
         COUNT(DISTINCT p.artist || ' - ' || p.title) AS unique_songs
     FROM playlist p
-    JOIN tracks t ON p.track_id = t.track_id
+    JOIN track_dedup t ON p.track_id = t.track_id
     WHERE t.release_date IS NOT NULL AND LENGTH(t.release_date) >= 4
     GROUP BY decade
     ORDER BY decade
 """
 
 _GENRE_SQL = """
+    WITH track_dedup AS (
+        SELECT DISTINCT ON (track_id) *
+        FROM tracks
+        ORDER BY track_id, confidence DESC NULLS LAST
+    )
     SELECT
         t.genre,
         COUNT(*) AS play_count,
         COUNT(DISTINCT p.artist || ' - ' || p.title) AS unique_songs,
         COUNT(DISTINCT p.artist) AS unique_artists
     FROM playlist p
-    JOIN tracks t ON p.track_id = t.track_id
+    JOIN track_dedup t ON p.track_id = t.track_id
     WHERE t.genre IS NOT NULL AND t.genre != ''
     GROUP BY t.genre
     ORDER BY play_count DESC
