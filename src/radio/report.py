@@ -441,6 +441,31 @@ _TEMPLATE = """<!DOCTYPE html>
   <script>
     // i18n
     var currentLang = 'en';
+    var traceLabels = {
+      'Daily': 'Dziennie',
+      '7-day avg': 'Śr. 7 dni',
+      'Weekly': 'Tygodniowo',
+      '8-week avg': 'Śr. 8 tyg.',
+      'Actual': 'Dane',
+      'Trend': 'Trend',
+      'Mon': 'Pn', 'Tue': 'Wt', 'Wed': 'Śr', 'Thu': 'Cz', 'Fri': 'Pt', 'Sat': 'Sb', 'Sun': 'Nd',
+    };
+    var axisLabels = {
+      'Songs': 'Utwory',
+      'Music %': 'Muzyka %',
+      'Date': 'Data',
+      'Plays': 'Odtworzeń',
+      'Decade': 'Dekada',
+      'Genre': 'Gatunek',
+      'Unique Ratio': 'Wsk. unikalności',
+      'Fresh Music %': 'Świeża muzyka %',
+      'HHI (lower = more diverse)': 'HHI (niżej = większa różnorodność)',
+      'Songs/Day': 'Utwory/dzień',
+      'Songs/Day (weekly effect)': 'Utwory/dzień (efekt tygodniowy)',
+    };
+
+    // Store original English labels per chart
+    var chartOriginals = {};
 
     function setLang(lang) {
       currentLang = lang;
@@ -449,6 +474,44 @@ _TEMPLATE = """<!DOCTYPE html>
       });
       document.getElementById('btn-en').classList.toggle('active', lang === 'en');
       document.getElementById('btn-pl').classList.toggle('active', lang === 'pl');
+
+      // Update chart labels
+      document.querySelectorAll('.chart-container').forEach(function(el) {
+        var gd = el;
+        if (!gd.data) return;
+
+        // Translate trace names
+        gd.data.forEach(function(trace, i) {
+          var orig = (chartOriginals[el.id] || {})[i];
+          if (!orig) return;
+          if (lang === 'pl') {
+            trace.name = traceLabels[orig] || orig;
+            // Translate bar x-axis categories (weekday names)
+            if (trace.type === 'bar' && trace.x) {
+              trace.x = trace.x.map(function(v) { return traceLabels[v] || v; });
+            }
+          } else {
+            trace.name = orig;
+            if (trace.type === 'bar' && (chartOriginals[el.id] || {}).x) {
+              trace.x = (chartOriginals[el.id] || {}).x;
+            }
+          }
+        });
+
+        // Translate axis titles
+        var update = {};
+        var origLayout = chartOriginals[el.id] && chartOriginals[el.id].layout || {};
+        if (lang === 'pl') {
+          if (origLayout.xtitle) update['xaxis.title.text'] = axisLabels[origLayout.xtitle] || origLayout.xtitle;
+          if (origLayout.ytitle) update['yaxis.title.text'] = axisLabels[origLayout.ytitle] || origLayout.ytitle;
+        } else {
+          if (origLayout.xtitle) update['xaxis.title.text'] = origLayout.xtitle;
+          if (origLayout.ytitle) update['yaxis.title.text'] = origLayout.ytitle;
+        }
+
+        Plotly.react(el.id, gd.data, gd.layout);
+        if (Object.keys(update).length) Plotly.relayout(el.id, update);
+      });
     }
 
     // Charts
@@ -465,6 +528,19 @@ _TEMPLATE = """<!DOCTYPE html>
       var data = fig.data;
       var layout = Object.assign({}, layout_defaults, fig.layout);
       Plotly.newPlot(id, data, layout, { responsive: true, displayModeBar: false });
+
+      // Store original English labels for i18n
+      var originals = {};
+      data.forEach(function(trace, i) { originals[i] = trace.name; });
+      // Store original bar x categories if present
+      if (data[0] && data[0].type === 'bar' && data[0].x) {
+        originals.x = data[0].x.slice();
+      }
+      originals.layout = {
+        xtitle: (layout.xaxis && layout.xaxis.title && (layout.xaxis.title.text || layout.xaxis.title)) || '',
+        ytitle: (layout.yaxis && layout.yaxis.title && (layout.yaxis.title.text || layout.yaxis.title)) || '',
+      };
+      chartOriginals[id] = originals;
     }
 
     plot('chart-songs-per-day', {{ fig_songs_per_day | safe }});
