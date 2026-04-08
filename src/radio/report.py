@@ -623,6 +623,9 @@ _TEMPLATE = """<!DOCTYPE html>
     plot('chart-hhi', {{ fig_hhi | safe }});
     plot('chart-genres', {{ fig_genres | safe }});
     plot('chart-decades', {{ fig_decades | safe }});
+
+    // Initialize text from data-en attributes on load
+    setLang('en');
   </script>
 </body>
 </html>
