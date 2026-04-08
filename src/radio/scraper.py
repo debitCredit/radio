@@ -62,7 +62,7 @@ def parse_playlist(html: str, date: datetime.date) -> tuple[SongPlay, ...] | Non
                 )
             )
 
-    return tuple(plays)
+    return tuple(plays) if plays else None
 
 
 async def fetch_playlist(
