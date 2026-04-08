@@ -979,7 +979,7 @@ def generate_report() -> None:
         fig_new_song=_fig_to_json(fig_new_song),
         fig_hhi=_fig_to_json(fig_hhi),
         fig_genres=_fig_to_json(fig_genres),
-        has_genres=genre_summary is not None and not genre_summary.is_empty(),
+        has_genres=genre_summary is not None and not genre_summary.is_empty() and genre_summary["play_count"].sum() >= 1000,
         fig_decades=_fig_to_json(fig_decades),
         # Tables
         top_artists=top_artists,
