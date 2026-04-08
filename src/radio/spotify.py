@@ -29,7 +29,9 @@ def _get_client() -> spotipy.Spotify:
     client_id = os.environ["SPOTIFY_CLIENT_ID"]
     client_secret = os.environ["SPOTIFY_CLIENT_SECRET"]
     auth = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
-    return spotipy.Spotify(auth_manager=auth)
+    # Disable spotipy's internal retry — it blindly sleeps for Retry-After
+    # which can be 24+ hours. We handle retries ourselves.
+    return spotipy.Spotify(auth_manager=auth, retries=0)
 
 
 def get_unenriched_pairs(
@@ -55,6 +57,26 @@ def get_unenriched_pairs(
     )
 
 
+class _RateLimiter:
+    """Token-bucket rate limiter: max `rate` calls per second."""
+
+    def __init__(self, rate: float) -> None:
+        self._interval = 1.0 / rate
+        self._lock = threading.Lock()
+        self._next = 0.0
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            if now < self._next:
+                time.sleep(self._next - now)
+            self._next = max(now, self._next) + self._interval
+
+
+# Module-level limiter: ~2 requests/second shared across threads
+_limiter = _RateLimiter(rate=2.0)
+
+
 def enrich_tracks(
     pairs: tuple[tuple[str, str], ...],
     workers: int = 3,
@@ -75,6 +97,7 @@ def enrich_tracks(
     counters = {"completed": 0, "matched": 0, "last_saved": 0}
 
     def _process(artist: str, title: str) -> dict | None:
+        _limiter.wait()
         return _enrich_one(sp, artist, title)
 
     def _maybe_flush() -> None:
@@ -163,6 +186,9 @@ def _enrich_one(
     }
 
 
+MAX_RETRY_AFTER = 60  # seconds — bail if Spotify asks us to wait longer
+
+
 def _search_with_retry(
     sp: spotipy.Spotify,
     query: str,
@@ -174,6 +200,9 @@ def _search_with_retry(
         except SpotifyException as exc:
             if exc.http_status == 429:
                 retry_after = int(exc.headers.get("Retry-After", 5)) if exc.headers else 5
+                if retry_after > MAX_RETRY_AFTER:
+                    logger.error("rate_ban retry_after=%ds — too long, giving up", retry_after)
+                    raise SystemExit(f"Spotify rate ban: {retry_after}s. Re-run later.")
                 logger.warning("rate_limited retry_after=%ds", retry_after)
                 time.sleep(retry_after)
             elif attempt < retries - 1:
