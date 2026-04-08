@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
@@ -9,6 +10,8 @@ import polars as pl
 import spotipy
 from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import SpotifyClientCredentials
+
+logger = logging.getLogger(__name__)
 
 try:
     from dotenv import load_dotenv
@@ -55,15 +58,20 @@ def enrich_tracks(pairs: tuple[tuple[str, str], ...]) -> pl.DataFrame:
     sp = _get_client()
     rows: list[dict] = []
 
+    matched = 0
     for i, (artist, title) in enumerate(pairs):
-        if i > 0 and i % 50 == 0:
-            print(f"[spotify] enriched {i}/{len(pairs)} tracks...")
-
         row = _enrich_one(sp, artist, title)
         if row is not None:
             rows.append(row)
+            matched += 1
+        else:
+            logger.debug("no_match artist=%r title=%r", artist, title)
 
-    print(f"[spotify] done — enriched {len(rows)}/{len(pairs)} tracks")
+        if (i + 1) % 100 == 0 or i + 1 == len(pairs):
+            logger.info(
+                "progress=%d/%d matched=%d miss=%d",
+                i + 1, len(pairs), matched, (i + 1) - matched,
+            )
 
     if not rows:
         return pl.DataFrame(schema=TRACKS_SCHEMA)
@@ -131,12 +139,13 @@ def _search_with_retry(
         except SpotifyException as exc:
             if exc.http_status == 429:
                 retry_after = int(exc.headers.get("Retry-After", 5)) if exc.headers else 5
-                print(f"[spotify] rate limited, sleeping {retry_after}s...")
+                logger.warning("rate_limited retry_after=%ds", retry_after)
                 time.sleep(retry_after)
             elif attempt < retries - 1:
+                logger.warning("search_error attempt=%d/%d query=%r error=%s", attempt + 1, retries, query, exc)
                 time.sleep(2 ** attempt)
             else:
-                print(f"[spotify] search failed for query '{query}': {exc}")
+                logger.error("search_failed query=%r error=%s", query, exc)
                 return None
     return None
 
