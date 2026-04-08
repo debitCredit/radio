@@ -135,6 +135,24 @@ _TEMPLATE = """<!DOCTYPE html>
     </div>
 
     <div class="section">
+      <h2>Eclecticity — Unique Ratio</h2>
+      <p style="color: #8888aa; font-size: 0.85rem; margin-bottom: 1rem;">Unique songs / total plays per week. Higher = less repetition.</p>
+      <div id="chart-unique-ratio" class="chart-container"></div>
+    </div>
+
+    <div class="section">
+      <h2>Eclecticity — Fresh Music Rate</h2>
+      <p style="color: #8888aa; font-size: 0.85rem; margin-bottom: 1rem;">% of plays that are songs not heard in the prior 90 days.</p>
+      <div id="chart-new-song" class="chart-container"></div>
+    </div>
+
+    <div class="section">
+      <h2>Eclecticity — Artist Concentration</h2>
+      <p style="color: #8888aa; font-size: 0.85rem; margin-bottom: 1rem;">Herfindahl-Hirschman Index of artist play share. Lower = more diverse.</p>
+      <div id="chart-hhi" class="chart-container"></div>
+    </div>
+
+    <div class="section">
       <h2>Top Genres</h2>
       <div id="chart-genres" class="chart-container"></div>
     </div>
@@ -213,6 +231,9 @@ _TEMPLATE = """<!DOCTYPE html>
     }
 
     plot('chart-music-pct', {{ fig_music_pct | safe }});
+    plot('chart-unique-ratio', {{ fig_unique_ratio | safe }});
+    plot('chart-new-song', {{ fig_new_song | safe }});
+    plot('chart-hhi', {{ fig_hhi | safe }});
     plot('chart-genres', {{ fig_genres | safe }});
     plot('chart-decades', {{ fig_decades | safe }});
     plot('chart-shows', {{ fig_shows | safe }});
@@ -269,6 +290,56 @@ def _music_pct_figure(daily: pl.DataFrame) -> go.Figure:
     fig.update_layout(
         template="plotly_dark",
         yaxis_title="Music %",
+        xaxis_title="Date",
+        legend={"orientation": "h", "y": -0.2},
+    )
+    return fig
+
+
+def _weekly_line_figure(
+    df: pl.DataFrame,
+    value_col: str,
+    *,
+    color: str = "#6366f1",
+    rolling_color: str = "#a78bfa",
+    yaxis_title: str = "",
+    rolling_window: int = 8,
+) -> go.Figure:
+    """Generic weekly line chart with rolling average."""
+    # Build a pseudo-date from iso_year + iso_week for the x-axis
+    import datetime
+
+    dates = [
+        datetime.date.fromisocalendar(int(row["iso_year"]), int(row["iso_week"]), 1)
+        for row in df.iter_rows(named=True)
+    ]
+    values = df[value_col].to_list()
+
+    rolling = (
+        df.with_columns(
+            pl.col(value_col)
+            .rolling_mean(window_size=rolling_window, min_samples=1)
+            .alias("rolling")
+        )["rolling"]
+        .to_list()
+    )
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=dates, y=values, mode="lines", name="Weekly",
+            line={"color": color, "width": 1}, opacity=0.4,
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=dates, y=rolling, mode="lines", name=f"{rolling_window}-week avg",
+            line={"color": rolling_color, "width": 2.5},
+        )
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        yaxis_title=yaxis_title,
         xaxis_title="Date",
         legend={"orientation": "h", "y": -0.2},
     )
@@ -373,6 +444,7 @@ def generate_report() -> None:
     show_summary = _load_parquet(storage.ANALYTICS_DIR / "program_summary.parquet")
     decades = _load_parquet(storage.ANALYTICS_DIR / "release_decade_summary.parquet")
     genre_summary = _load_parquet(storage.ANALYTICS_DIR / "genre_summary.parquet")
+    eclecticity = _load_parquet(storage.ANALYTICS_DIR / "eclecticity.parquet")
     playlist = _load_parquet(storage.PLAYLIST_PATH)
 
     if daily is None or daily.is_empty():
@@ -380,6 +452,25 @@ def generate_report() -> None:
         return
 
     fig_music_pct = _music_pct_figure(daily)
+
+    if eclecticity is not None and not eclecticity.is_empty():
+        fig_unique_ratio = _weekly_line_figure(
+            eclecticity, "unique_ratio",
+            color="#22d3ee", rolling_color="#06b6d4", yaxis_title="Unique Ratio",
+        )
+        fig_new_song = _weekly_line_figure(
+            eclecticity, "new_song_pct",
+            color="#f472b6", rolling_color="#ec4899", yaxis_title="Fresh Music %",
+        )
+        fig_hhi = _weekly_line_figure(
+            eclecticity.filter(pl.col("artist_hhi").is_not_null()),
+            "artist_hhi",
+            color="#fb923c", rolling_color="#f97316", yaxis_title="HHI (lower = more diverse)",
+        )
+    else:
+        fig_unique_ratio = go.Figure()
+        fig_new_song = go.Figure()
+        fig_hhi = go.Figure()
 
     if genre_summary is not None and not genre_summary.is_empty():
         fig_genres = _genres_figure(genre_summary)
@@ -406,6 +497,9 @@ def generate_report() -> None:
     template = Template(_TEMPLATE)
     html = template.render(
         fig_music_pct=_fig_to_json(fig_music_pct),
+        fig_unique_ratio=_fig_to_json(fig_unique_ratio),
+        fig_new_song=_fig_to_json(fig_new_song),
+        fig_hhi=_fig_to_json(fig_hhi),
         fig_genres=_fig_to_json(fig_genres),
         fig_decades=_fig_to_json(fig_decades),
         fig_shows=_fig_to_json(fig_shows),
