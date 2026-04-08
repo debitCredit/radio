@@ -57,7 +57,7 @@ def get_unenriched_pairs(
 
 def enrich_tracks(
     pairs: tuple[tuple[str, str], ...],
-    workers: int = 10,
+    workers: int = 3,
     save_every: int = 500,
     on_batch: callable = None,
 ) -> pl.DataFrame:
