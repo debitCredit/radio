@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import polars as pl
 import spotipy
@@ -53,25 +55,37 @@ def get_unenriched_pairs(
     )
 
 
-def enrich_tracks(pairs: tuple[tuple[str, str], ...]) -> pl.DataFrame:
-    """Search Spotify for each (artist, title) pair and return an enriched DataFrame."""
+def enrich_tracks(pairs: tuple[tuple[str, str], ...], workers: int = 10) -> pl.DataFrame:
+    """Search Spotify for each (artist, title) pair concurrently."""
     sp = _get_client()
     rows: list[dict] = []
-
+    lock = threading.Lock()
+    completed = 0
     matched = 0
-    for i, (artist, title) in enumerate(pairs):
-        row = _enrich_one(sp, artist, title)
-        if row is not None:
-            rows.append(row)
-            matched += 1
-        else:
-            logger.debug("no_match artist=%r title=%r", artist, title)
 
-        if (i + 1) % 100 == 0 or i + 1 == len(pairs):
-            logger.info(
-                "progress=%d/%d matched=%d miss=%d",
-                i + 1, len(pairs), matched, (i + 1) - matched,
-            )
+    def _process(artist: str, title: str) -> dict | None:
+        return _enrich_one(sp, artist, title)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_process, a, t): (a, t) for a, t in pairs}
+
+        for future in as_completed(futures):
+            artist, title = futures[future]
+            row = future.result()
+
+            with lock:
+                if row is not None:
+                    rows.append(row)
+                    matched += 1
+                else:
+                    logger.debug("no_match artist=%r title=%r", artist, title)
+
+                completed += 1
+                if completed % 500 == 0 or completed == len(pairs):
+                    logger.info(
+                        "progress=%d/%d matched=%d miss=%d",
+                        completed, len(pairs), matched, completed - matched,
+                    )
 
     if not rows:
         return pl.DataFrame(schema=TRACKS_SCHEMA)
