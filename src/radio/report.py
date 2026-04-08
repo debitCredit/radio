@@ -135,13 +135,8 @@ _TEMPLATE = """<!DOCTYPE html>
     </div>
 
     <div class="section">
-      <h2>Energy &amp; Mood Over Time</h2>
-      <div id="chart-energy-mood" class="chart-container"></div>
-    </div>
-
-    <div class="section">
-      <h2>Top Genres</h2>
-      <div id="chart-genres" class="chart-container"></div>
+      <h2>Release Decades</h2>
+      <div id="chart-decades" class="chart-container"></div>
     </div>
 
     <div class="section">
@@ -213,8 +208,7 @@ _TEMPLATE = """<!DOCTYPE html>
     }
 
     plot('chart-music-pct', {{ fig_music_pct | safe }});
-    plot('chart-energy-mood', {{ fig_energy_mood | safe }});
-    plot('chart-genres', {{ fig_genres | safe }});
+    plot('chart-decades', {{ fig_decades | safe }});
     plot('chart-shows', {{ fig_shows | safe }});
   </script>
 </body>
@@ -237,7 +231,6 @@ def _music_pct_figure(daily: pl.DataFrame) -> go.Figure:
     dates = daily_sorted["date"].to_list()
     music_pct = daily_sorted["music_pct"].to_list()
 
-    # 7-day rolling average via Polars
     rolling = (
         daily_sorted.with_columns(
             pl.col("music_pct")
@@ -276,61 +269,14 @@ def _music_pct_figure(daily: pl.DataFrame) -> go.Figure:
     return fig
 
 
-def _energy_mood_figure(weekly: pl.DataFrame) -> go.Figure:
-    weekly_sorted = weekly.sort(["iso_year", "iso_week"])
-    # Build a label like "2024-W01"
-    labels = [
-        f"{int(row['iso_year'])}-W{int(row['iso_week']):02d}"
-        for row in weekly_sorted.iter_rows(named=True)
-    ]
-    energy = weekly_sorted["avg_energy"].to_list()
-    valence = weekly_sorted["avg_valence"].to_list()
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=labels,
-            y=energy,
-            mode="lines+markers",
-            name="Energy",
-            line={"color": "#f59e0b", "width": 2},
-            marker={"size": 4},
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=labels,
-            y=valence,
-            mode="lines+markers",
-            name="Valence (mood)",
-            line={"color": "#34d399", "width": 2},
-            marker={"size": 4},
-        )
-    )
-    fig.update_layout(
-        template="plotly_dark",
-        yaxis_title="Score (0–1)",
-        xaxis_title="ISO Week",
-        legend={"orientation": "h", "y": -0.25},
-        xaxis={"tickangle": -45},
-    )
-    return fig
-
-
-def _genres_figure(daily: pl.DataFrame) -> go.Figure:
-    genre_counts = (
-        daily.filter(pl.col("top_genre").is_not_null())
-        .group_by("top_genre")
-        .agg(pl.len().alias("count"))
-        .sort("count", descending=True)
-        .head(15)
-    )
-    genres = genre_counts["top_genre"].to_list()
-    counts = genre_counts["count"].to_list()
+def _decades_figure(decades: pl.DataFrame) -> go.Figure:
+    decades_sorted = decades.sort("decade")
+    labels = decades_sorted["decade"].to_list()
+    counts = decades_sorted["play_count"].to_list()
 
     fig = go.Figure(
         go.Bar(
-            x=genres,
+            x=labels,
             y=counts,
             marker_color="#7c3aed",
             marker_line_color="#a78bfa",
@@ -339,9 +285,8 @@ def _genres_figure(daily: pl.DataFrame) -> go.Figure:
     )
     fig.update_layout(
         template="plotly_dark",
-        yaxis_title="Days",
-        xaxis_title="Genre",
-        xaxis={"tickangle": -35},
+        yaxis_title="Plays",
+        xaxis_title="Decade",
     )
     return fig
 
@@ -395,8 +340,8 @@ def _top_songs(playlist: pl.DataFrame, n: int = 20) -> list[dict]:
 
 def generate_report() -> None:
     daily = _load_parquet(storage.ANALYTICS_DIR / "daily_summary.parquet")
-    weekly = _load_parquet(storage.ANALYTICS_DIR / "weekly_summary.parquet")
     show_summary = _load_parquet(storage.ANALYTICS_DIR / "program_summary.parquet")
+    decades = _load_parquet(storage.ANALYTICS_DIR / "release_decade_summary.parquet")
     playlist = _load_parquet(storage.PLAYLIST_PATH)
 
     if daily is None or daily.is_empty():
@@ -405,12 +350,10 @@ def generate_report() -> None:
 
     fig_music_pct = _music_pct_figure(daily)
 
-    if weekly is not None and not weekly.is_empty():
-        fig_energy_mood = _energy_mood_figure(weekly)
+    if decades is not None and not decades.is_empty():
+        fig_decades = _decades_figure(decades)
     else:
-        fig_energy_mood = go.Figure()
-
-    fig_genres = _genres_figure(daily)
+        fig_decades = go.Figure()
 
     if show_summary is not None and not show_summary.is_empty():
         fig_shows = _shows_figure(show_summary)
@@ -427,8 +370,7 @@ def generate_report() -> None:
     template = Template(_TEMPLATE)
     html = template.render(
         fig_music_pct=_fig_to_json(fig_music_pct),
-        fig_energy_mood=_fig_to_json(fig_energy_mood),
-        fig_genres=_fig_to_json(fig_genres),
+        fig_decades=_fig_to_json(fig_decades),
         fig_shows=_fig_to_json(fig_shows),
         top_artists=top_artists,
         top_songs=top_songs,

@@ -163,7 +163,10 @@ def stats() -> None:
         daily = pl.read_parquet(daily_path)
         if "music_pct" in daily.columns:
             avg_music_pct = daily["music_pct"].drop_nulls().mean()
-            print(f"Avg music %:     {avg_music_pct:.1f}%" if avg_music_pct is not None else "Avg music %:     N/A")
+            if avg_music_pct is not None:
+                print(f"Avg music %:     {avg_music_pct:.1f}%")
+            else:
+                print("Avg music %:     N/A")
 
 
 @cli.command()

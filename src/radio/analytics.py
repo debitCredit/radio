@@ -5,31 +5,6 @@ import polars as pl
 from radio import storage
 
 
-def _top_genre_by_group(df: pl.DataFrame, group_cols: list[str]) -> pl.DataFrame:
-    """Given a DataFrame with group_cols and a 'genres' column, return a DataFrame
-    with group_cols + 'top_genre' where top_genre is the most frequent genre."""
-    rows = []
-    for key, group in df.group_by(group_cols):
-        all_genres: list[str] = []
-        for genres_val in group["genres"].to_list():
-            if genres_val:
-                all_genres.extend(g.strip() for g in genres_val.split(",") if g.strip())
-        if all_genres:
-            top = max(set(all_genres), key=all_genres.count)
-        else:
-            top = None
-        row = dict(zip(group_cols, key))
-        row["top_genre"] = top
-        rows.append(row)
-
-    if not rows:
-        schema = {col: df.schema[col] for col in group_cols}
-        schema["top_genre"] = pl.Utf8
-        return pl.DataFrame(schema=schema)
-
-    return pl.DataFrame(rows)
-
-
 def compute_daily_summary() -> pl.DataFrame:
     sql = """
         SELECT
@@ -40,28 +15,13 @@ def compute_daily_summary() -> pl.DataFrame:
             SUM(t.duration_ms) / 1000.0 / 60.0 AS music_minutes,
             1440.0 - SUM(t.duration_ms) / 1000.0 / 60.0 AS talk_minutes,
             (SUM(t.duration_ms) / 1000.0 / 60.0) / 1440.0 * 100 AS music_pct,
-            AVG(t.energy) AS avg_energy,
-            AVG(t.danceability) AS avg_danceability,
-            AVG(t.valence) AS avg_valence,
-            AVG(t.tempo) AS avg_tempo,
-            AVG(t.popularity) AS avg_popularity
+            SUM(CASE WHEN t.explicit THEN 1 ELSE 0 END) AS explicit_count
         FROM playlist p
         LEFT JOIN tracks t ON p.spotify_track_id = t.spotify_track_id
         GROUP BY p.date
         ORDER BY p.date
     """
-    base = storage.query(sql)
-
-    genres_sql = """
-        SELECT p.date, t.genres
-        FROM playlist p
-        LEFT JOIN tracks t ON p.spotify_track_id = t.spotify_track_id
-        WHERE t.genres IS NOT NULL AND t.genres != ''
-    """
-    genres_df = storage.query(genres_sql)
-    top_genre_df = _top_genre_by_group(genres_df, ["date"])
-
-    df = base.join(top_genre_df, on="date", how="left")
+    df = storage.query(sql)
 
     storage.ANALYTICS_DIR.mkdir(parents=True, exist_ok=True)
     df.write_parquet(storage.ANALYTICS_DIR / "daily_summary.parquet")
@@ -80,31 +40,13 @@ def compute_weekly_summary() -> pl.DataFrame:
             SUM(t.duration_ms) / 1000.0 / 60.0 AS music_minutes,
             COUNT(DISTINCT p.date) * 1440.0 - SUM(t.duration_ms) / 1000.0 / 60.0 AS talk_minutes,
             (SUM(t.duration_ms) / 1000.0 / 60.0) / (COUNT(DISTINCT p.date) * 1440.0) * 100 AS music_pct,
-            AVG(t.energy) AS avg_energy,
-            AVG(t.danceability) AS avg_danceability,
-            AVG(t.valence) AS avg_valence,
-            AVG(t.tempo) AS avg_tempo,
-            AVG(t.popularity) AS avg_popularity
+            SUM(CASE WHEN t.explicit THEN 1 ELSE 0 END) AS explicit_count
         FROM playlist p
         LEFT JOIN tracks t ON p.spotify_track_id = t.spotify_track_id
         GROUP BY iso_year, iso_week
         ORDER BY iso_year, iso_week
     """
-    base = storage.query(sql)
-
-    genres_sql = """
-        SELECT
-            EXTRACT(isoyear FROM p.date) AS iso_year,
-            EXTRACT(week FROM p.date) AS iso_week,
-            t.genres
-        FROM playlist p
-        LEFT JOIN tracks t ON p.spotify_track_id = t.spotify_track_id
-        WHERE t.genres IS NOT NULL AND t.genres != ''
-    """
-    genres_df = storage.query(genres_sql)
-    top_genre_df = _top_genre_by_group(genres_df, ["iso_year", "iso_week"])
-
-    df = base.join(top_genre_df, on=["iso_year", "iso_week"], how="left")
+    df = storage.query(sql)
 
     storage.ANALYTICS_DIR.mkdir(parents=True, exist_ok=True)
     df.write_parquet(storage.ANALYTICS_DIR / "weekly_summary.parquet")
@@ -118,29 +60,36 @@ def compute_program_summary() -> pl.DataFrame:
             COUNT(*) AS total_plays,
             COUNT(DISTINCT p.artist || ' - ' || p.title) AS unique_songs,
             COUNT(DISTINCT p.artist) AS unique_artists,
-            AVG(t.energy) AS avg_energy,
-            AVG(t.danceability) AS avg_danceability,
-            AVG(t.valence) AS avg_valence
+            SUM(CASE WHEN t.explicit THEN 1 ELSE 0 END) AS explicit_count
         FROM playlist p
         LEFT JOIN tracks t ON p.spotify_track_id = t.spotify_track_id
         GROUP BY p.program
         ORDER BY p.program
     """
-    base = storage.query(sql)
-
-    genres_sql = """
-        SELECT p.program, t.genres
-        FROM playlist p
-        LEFT JOIN tracks t ON p.spotify_track_id = t.spotify_track_id
-        WHERE t.genres IS NOT NULL AND t.genres != ''
-    """
-    genres_df = storage.query(genres_sql)
-    top_genre_df = _top_genre_by_group(genres_df, ["program"])
-
-    df = base.join(top_genre_df, on="program", how="left")
+    df = storage.query(sql)
 
     storage.ANALYTICS_DIR.mkdir(parents=True, exist_ok=True)
     df.write_parquet(storage.ANALYTICS_DIR / "program_summary.parquet")
+    return df
+
+
+def compute_release_year_summary() -> pl.DataFrame:
+    """How old is the music Radio 357 plays? Group tracks by release decade."""
+    sql = """
+        SELECT
+            CAST(SUBSTRING(t.release_date, 1, 3) || '0' AS VARCHAR) || 's' AS decade,
+            COUNT(*) AS play_count,
+            COUNT(DISTINCT p.artist || ' - ' || p.title) AS unique_songs
+        FROM playlist p
+        JOIN tracks t ON p.spotify_track_id = t.spotify_track_id
+        WHERE t.release_date IS NOT NULL AND LENGTH(t.release_date) >= 4
+        GROUP BY decade
+        ORDER BY decade
+    """
+    df = storage.query(sql)
+
+    storage.ANALYTICS_DIR.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(storage.ANALYTICS_DIR / "release_decade_summary.parquet")
     return df
 
 
@@ -155,3 +104,6 @@ def compute_all() -> None:
 
     program = compute_program_summary()
     print(f"program_summary: {len(program)} rows -> {storage.ANALYTICS_DIR / 'program_summary.parquet'}")
+
+    decades = compute_release_year_summary()
+    print(f"release_decade_summary: {len(decades)} rows -> {storage.ANALYTICS_DIR / 'release_decade_summary.parquet'}")

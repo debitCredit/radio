@@ -85,42 +85,17 @@ def _enrich_one(
         return None
 
     track = items[0]
-    track_id: str = track["id"]
-    duration_ms: int = track["duration_ms"]
-    popularity: int = track["popularity"]
-    album: str = track["album"]["name"]
-    release_date: str = track["album"]["release_date"]
-    spotify_title: str = track["name"]
-
-    # Use first artist for name and genres
-    first_artist = track["artists"][0] if track["artists"] else {}
-    spotify_artist: str = first_artist.get("name", "")
-    artist_id: str = first_artist.get("id", "")
-
-    genres_str: str | None = None
-    if artist_id:
-        genres_str = _fetch_genres(sp, artist_id)
-
-    # Audio features may be deprecated/restricted
-    audio = _fetch_audio_features(sp, track_id)
 
     return {
-        "spotify_track_id": track_id,
+        "spotify_track_id": track["id"],
         "artist": artist,
         "title": title,
-        "spotify_artist": spotify_artist,
-        "spotify_title": spotify_title,
-        "duration_ms": duration_ms,
-        "popularity": popularity,
-        "album": album,
-        "release_date": release_date,
-        "genres": genres_str,
-        "energy": audio.get("energy") if audio else None,
-        "danceability": audio.get("danceability") if audio else None,
-        "valence": audio.get("valence") if audio else None,
-        "tempo": audio.get("tempo") if audio else None,
-        "acousticness": audio.get("acousticness") if audio else None,
-        "instrumentalness": audio.get("instrumentalness") if audio else None,
+        "spotify_artist": track["artists"][0]["name"] if track["artists"] else "",
+        "spotify_title": track["name"],
+        "duration_ms": track["duration_ms"],
+        "explicit": track.get("explicit", False),
+        "album": track["album"]["name"],
+        "release_date": track["album"].get("release_date", ""),
     }
 
 
@@ -145,27 +120,6 @@ def _search_with_retry(
     return None
 
 
-def _fetch_genres(sp: spotipy.Spotify, artist_id: str) -> str | None:
-    try:
-        artist_data = sp.artist(artist_id)
-        genres: list[str] = artist_data.get("genres", [])
-        return ",".join(genres) if genres else None
-    except SpotifyException as exc:
-        print(f"[spotify] failed to fetch genres for artist {artist_id}: {exc}")
-        return None
-
-
-def _fetch_audio_features(sp: spotipy.Spotify, track_id: str) -> dict | None:
-    try:
-        features = sp.audio_features(track_id)
-        if features and features[0]:
-            return features[0]
-        return None
-    except (SpotifyException, Exception) as exc:
-        print(f"[spotify] audio_features unavailable for {track_id}: {exc}")
-        return None
-
-
 def update_playlist_with_track_ids(
     playlist_df: pl.DataFrame,
     tracks_df: pl.DataFrame,
@@ -176,7 +130,6 @@ def update_playlist_with_track_ids(
 
     id_map = tracks_df.select(["artist", "title", "spotify_track_id"])
 
-    # Drop existing spotify_track_id column if present to avoid conflicts
     if "spotify_track_id" in playlist_df.columns:
         base = playlist_df.drop("spotify_track_id")
     else:
@@ -184,6 +137,5 @@ def update_playlist_with_track_ids(
 
     updated = base.join(id_map, on=["artist", "title"], how="left")
 
-    # Restore original column order
     cols = [c for c in playlist_df.columns]
     return updated.select(cols)

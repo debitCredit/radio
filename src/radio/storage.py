@@ -27,16 +27,9 @@ TRACKS_SCHEMA: dict[str, pl.PolarsDataType] = {
     "spotify_artist": pl.Utf8,
     "spotify_title": pl.Utf8,
     "duration_ms": pl.Int64,
-    "popularity": pl.Int64,
+    "explicit": pl.Boolean,
     "album": pl.Utf8,
     "release_date": pl.Utf8,
-    "genres": pl.Utf8,
-    "energy": pl.Float64,
-    "danceability": pl.Float64,
-    "valence": pl.Float64,
-    "tempo": pl.Float64,
-    "acousticness": pl.Float64,
-    "instrumentalness": pl.Float64,
 }
 
 
