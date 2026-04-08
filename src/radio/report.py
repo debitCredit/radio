@@ -438,11 +438,13 @@ _TEMPLATE = """<!DOCTYPE html>
       <div id="chart-hhi" class="chart-container"></div>
     </div>
 
+    {% if has_genres %}
     <!-- Top Genres -->
     <div class="section">
       <h2 data-en="Top Genres" data-pl="Najpopularniejsze gatunki"></h2>
       <div id="chart-genres" class="chart-container"></div>
     </div>
+    {% endif %}
 
     <!-- Release Decades -->
     <div class="section">
@@ -973,6 +975,7 @@ def generate_report() -> None:
         fig_new_song=_fig_to_json(fig_new_song),
         fig_hhi=_fig_to_json(fig_hhi),
         fig_genres=_fig_to_json(fig_genres),
+        has_genres=genre_summary is not None and not genre_summary.is_empty(),
         fig_decades=_fig_to_json(fig_decades),
         # Tables
         top_artists=top_artists,
