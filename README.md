@@ -2,7 +2,9 @@
 
 **[Live Report](https://debitcredit.github.io/radio/)**
 
-Scrapes daily playlists from [Radio 357](https://radio357.pl), enriches tracks with metadata from multiple music providers, and generates a static analytics report.
+[Radio 357](https://radio357.pl) is a Polish independent radio station that I've been listening to for years. At some point I started feeling like there's less music and more talk than there used to be. Instead of just complaining about it, I decided to find out — scrape every playlist they've published since mid-2022, enrich the tracks with metadata from music APIs, and see what the data actually says.
+
+This tool answers questions like: is the music-to-talk ratio really shrinking? What genres dominate the airwaves? Which artists and songs get the most play? How does programming differ across shows?
 
 ## What it does
 
