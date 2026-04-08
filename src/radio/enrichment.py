@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Callable
 
@@ -16,6 +16,9 @@ from radio.storage import TRACKS_SCHEMA
 
 logger = logging.getLogger(__name__)
 
+# Sentinel to signal workers to stop
+_STOP = ("__STOP__", "__STOP__")
+
 
 @dataclass
 class _Provider:
@@ -26,13 +29,12 @@ class _Provider:
 
 
 def _build_providers() -> tuple[_Provider, ...]:
-    """Build list of available providers in priority order."""
+    """Build list of available providers."""
     providers = [
-        _Provider(name="itunes", search=itunes.search, rate=itunes.RATE_LIMIT, workers=1),
         _Provider(name="deezer", search=deezer.search, rate=deezer.RATE_LIMIT, workers=3),
+        _Provider(name="itunes", search=itunes.search, rate=itunes.RATE_LIMIT, workers=1),
     ]
 
-    # Spotify is optional — needs credentials
     try:
         from radio.providers import spotify_provider
         if spotify_provider.available():
@@ -107,19 +109,27 @@ def enrich_tracks(
 ) -> pl.DataFrame:
     """Enrich tracks using all available providers in parallel.
 
-    Each provider runs its own thread pool with its own rate limiter.
-    A shared set tracks which pairs are still needed. When any provider
-    finds a match, that pair is removed so others skip it.
+    Uses a shared work queue: each pair is processed by one provider at a time.
+    Misses go to a retry queue for other providers to attempt.
     """
     providers = _build_providers()
     logger.info("providers=%s", [p.name for p in providers])
 
-    # Shared state
-    remaining: set[tuple[str, str]] = set(pairs)
-    remaining_lock = threading.Lock()
+    # Work queue — each item is (artist, title, tried_providers)
+    work_q: queue.Queue[tuple[str, str, frozenset[str]]] = queue.Queue()
+    for artist, title in pairs:
+        work_q.put((artist, title, frozenset()))
+
+    # Retry queue — pairs that missed, to be redistributed
+    retry_q: queue.Queue[tuple[str, str, frozenset[str]]] = queue.Queue()
+
+    # Results
+    found: set[tuple[str, str]] = set()
+    found_lock = threading.Lock()
     rows: list[dict] = []
     rows_lock = threading.Lock()
     counters = {"completed": 0, "matched": 0, "last_saved": 0}
+    provider_names = frozenset(p.name for p in providers)
 
     def _maybe_flush() -> None:
         pending = len(rows) - counters["last_saved"]
@@ -129,83 +139,134 @@ def enrich_tracks(
             on_batch(batch)
             logger.info("batch_saved rows=%d total_saved=%d", len(batch), counters["last_saved"])
 
-    def _run_provider(provider: _Provider) -> None:
-        limiter = _RateLimiter(provider.rate)
+    def _worker(provider: _Provider, limiter: _RateLimiter) -> None:
         plog = logging.getLogger(f"radio.enrichment.{provider.name}")
 
-        def _process_one(artist: str, title: str) -> None:
-            # Check if still needed
-            with remaining_lock:
-                if (artist, title) not in remaining:
-                    return
+        while True:
+            try:
+                item = work_q.get(timeout=1)
+            except queue.Empty:
+                return
+
+            artist, title = item[0], item[1]
+            tried = item[2]
+
+            if artist == _STOP[0]:
+                work_q.put(item)  # re-add for other workers
+                return
+
+            # Skip if already found by another provider
+            with found_lock:
+                if (artist, title) in found:
+                    work_q.task_done()
+                    continue
+
+            # Skip if this provider already tried
+            if provider.name in tried:
+                # Put back for other providers
+                retry_q.put((artist, title, tried))
+                work_q.task_done()
+                continue
 
             limiter.wait()
 
             try:
                 match = provider.search(artist, title)
             except RateBanError:
-                plog.warning("rate ban — stopping this provider")
+                plog.warning("rate ban — stopping provider")
+                # Put item back for other providers
+                retry_q.put((artist, title, tried | {provider.name}))
+                work_q.task_done()
+                # Drain remaining items back to retry queue
+                while True:
+                    try:
+                        remaining_item = work_q.get_nowait()
+                        if remaining_item[0] != _STOP[0]:
+                            retry_q.put((remaining_item[0], remaining_item[1], remaining_item[2] | {provider.name}))
+                        work_q.task_done()
+                    except queue.Empty:
+                        break
                 return
             except Exception as exc:
                 plog.debug("error artist=%r title=%r error=%s", artist, title, exc)
-                return
+                retry_q.put((artist, title, tried | {provider.name}))
+                work_q.task_done()
+                continue
 
             with rows_lock:
-                # Double-check — another provider may have found it
-                with remaining_lock:
-                    if (artist, title) not in remaining:
-                        return
-                    remaining.discard((artist, title))
+                with found_lock:
+                    if (artist, title) in found:
+                        work_q.task_done()
+                        continue
+                    found.add((artist, title))
 
                 if match is not None:
                     rows.append(_match_to_row(artist, title, match))
                     counters["matched"] += 1
+                else:
+                    # Search returned None — provider couldn't find it
+                    found.discard((artist, title))
+                    retry_q.put((artist, title, tried | {provider.name}))
 
                 counters["completed"] += 1
                 if counters["completed"] % 500 == 0:
-                    plog.info(
-                        "progress=%d/%d matched=%d remaining=%d",
+                    logger.info(
+                        "progress=%d/%d matched=%d queue=%d",
                         counters["completed"], len(pairs),
-                        counters["matched"], len(remaining),
+                        counters["matched"], work_q.qsize(),
                     )
                 _maybe_flush()
 
-        # Each provider gets its own thread pool
-        with ThreadPoolExecutor(max_workers=provider.workers) as pool:
-            futures = []
-            for artist, title in pairs:
-                futures.append(pool.submit(_process_one, artist, title))
+            work_q.task_done()
 
-            for future in as_completed(futures):
-                try:
-                    future.result()
-                except RateBanError:
-                    plog.warning("rate ban — cancelling remaining work for %s", provider.name)
-                    for f in futures:
-                        f.cancel()
-                    break
-                except Exception:
-                    pass  # Individual errors already logged
+    # Run rounds until no more progress
+    max_rounds = len(providers)
+    for round_num in range(max_rounds):
+        if work_q.empty() and retry_q.empty():
+            break
 
-        plog.info("provider_done matched_so_far=%d remaining=%d", counters["matched"], len(remaining))
+        # Move retries back to work queue (only pairs not yet tried by all providers)
+        moved = 0
+        while not retry_q.empty():
+            try:
+                item = retry_q.get_nowait()
+                if item[2] < provider_names:  # still has untried providers
+                    work_q.put(item)
+                    moved += 1
+            except queue.Empty:
+                break
 
-    # Run all providers concurrently — each in its own thread
-    provider_threads: list[threading.Thread] = []
-    for provider in providers:
-        t = threading.Thread(target=_run_provider, args=(provider,), name=f"provider-{provider.name}")
-        t.start()
-        provider_threads.append(t)
+        if work_q.empty():
+            break
 
-    try:
-        for t in provider_threads:
-            t.join()
-    except KeyboardInterrupt:
-        logger.warning("interrupted — saving progress")
+        if round_num > 0:
+            logger.info("round=%d retrying=%d pairs with remaining providers", round_num + 1, moved)
 
-    # Final progress
+        # Start workers for all providers
+        threads: list[threading.Thread] = []
+        for provider in providers:
+            limiter = _RateLimiter(provider.rate)
+            for i in range(provider.workers):
+                t = threading.Thread(
+                    target=_worker,
+                    args=(provider, limiter),
+                    name=f"{provider.name}-{i}",
+                )
+                t.start()
+                threads.append(t)
+
+        try:
+            for t in threads:
+                t.join()
+        except KeyboardInterrupt:
+            logger.warning("interrupted — saving progress")
+            # Signal workers to stop
+            for _ in threads:
+                work_q.put((_STOP[0], _STOP[1], frozenset()))
+
     logger.info(
-        "enrichment_done matched=%d/%d remaining=%d",
-        counters["matched"], len(pairs), len(remaining),
+        "enrichment_done matched=%d/%d",
+        counters["matched"], len(pairs),
     )
 
     # Return unsaved rows
@@ -227,30 +288,24 @@ def backfill_genres(
 
     logger.info("backfilling genres for %d tracks via iTunes", len(missing))
     limiter = _RateLimiter(itunes.RATE_LIMIT)
-    updated = 0
+    found = 0
 
-    # Build a mutable genre map
     genre_map: dict[tuple[str, str], str] = {}
 
-    for row in missing.iter_rows(named=True):
+    for i, row in enumerate(missing.iter_rows(named=True)):
         artist, title = row["artist"], row["title"]
         limiter.wait()
         genre = itunes.lookup_genre(artist, title)
         if genre:
             genre_map[(artist, title)] = genre
-            updated += 1
+            found += 1
 
-        if (updated + 1) % 100 == 0:
-            logger.info("genre_backfill progress=%d/%d found=%d", updated, len(missing), len(genre_map))
+        if (i + 1) % 100 == 0:
+            logger.info("genre_backfill progress=%d/%d found=%d", i + 1, len(missing), found)
 
     if not genre_map:
         logger.info("no new genres found")
         return tracks_df
-
-    # Apply genres
-    def _fill_genre(row: dict) -> str | None:
-        key = (row["artist"], row["title"])
-        return genre_map.get(key, row["genre"])
 
     result = tracks_df.with_columns(
         pl.struct(["artist", "title", "genre"])
@@ -261,7 +316,7 @@ def backfill_genres(
         .alias("genre")
     )
 
-    logger.info("genre_backfill_done filled=%d/%d", len(genre_map), len(missing))
+    logger.info("genre_backfill_done filled=%d/%d", found, len(missing))
 
     if on_save:
         on_save(result)
@@ -277,7 +332,6 @@ def update_playlist_with_track_ids(
     if tracks_df.is_empty():
         return playlist_df
 
-    # Deduplicate tracks to prevent join fan-out
     id_map = tracks_df.select(["artist", "title", "track_id"]).unique(
         subset=["artist", "title"], keep="first"
     )
