@@ -67,6 +67,19 @@ _DECADES_SQL = """
     ORDER BY decade
 """
 
+_GENRE_SQL = """
+    SELECT
+        t.genre,
+        COUNT(*) AS play_count,
+        COUNT(DISTINCT p.artist || ' - ' || p.title) AS unique_songs,
+        COUNT(DISTINCT p.artist) AS unique_artists
+    FROM playlist p
+    JOIN tracks t ON p.track_id = t.track_id
+    WHERE t.genre IS NOT NULL AND t.genre != ''
+    GROUP BY t.genre
+    ORDER BY play_count DESC
+"""
+
 
 def compute_all() -> None:
     storage.ANALYTICS_DIR.mkdir(parents=True, exist_ok=True)
@@ -76,6 +89,7 @@ def compute_all() -> None:
         "weekly": _WEEKLY_SQL,
         "program": _PROGRAM_SQL,
         "decades": _DECADES_SQL,
+        "genre": _GENRE_SQL,
     })
 
     outputs = {
@@ -83,6 +97,7 @@ def compute_all() -> None:
         "weekly": ("weekly_summary.parquet", results["weekly"]),
         "program": ("program_summary.parquet", results["program"]),
         "decades": ("release_decade_summary.parquet", results["decades"]),
+        "genre": ("genre_summary.parquet", results["genre"]),
     }
 
     for name, (filename, df) in outputs.items():

@@ -135,6 +135,11 @@ _TEMPLATE = """<!DOCTYPE html>
     </div>
 
     <div class="section">
+      <h2>Top Genres</h2>
+      <div id="chart-genres" class="chart-container"></div>
+    </div>
+
+    <div class="section">
       <h2>Release Decades</h2>
       <div id="chart-decades" class="chart-container"></div>
     </div>
@@ -208,6 +213,7 @@ _TEMPLATE = """<!DOCTYPE html>
     }
 
     plot('chart-music-pct', {{ fig_music_pct | safe }});
+    plot('chart-genres', {{ fig_genres | safe }});
     plot('chart-decades', {{ fig_decades | safe }});
     plot('chart-shows', {{ fig_shows | safe }});
   </script>
@@ -291,6 +297,30 @@ def _decades_figure(decades: pl.DataFrame) -> go.Figure:
     return fig
 
 
+def _genres_figure(genre_summary: pl.DataFrame, n: int = 25) -> go.Figure:
+    top = genre_summary.sort("play_count", descending=False).tail(n)
+    genres = top["genre"].to_list()
+    counts = top["play_count"].to_list()
+
+    fig = go.Figure(
+        go.Bar(
+            x=counts,
+            y=genres,
+            orientation="h",
+            marker_color="#10b981",
+            marker_line_color="#34d399",
+            marker_line_width=1,
+        )
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        xaxis_title="Plays",
+        yaxis_title="Genre",
+        height=max(350, n * 28 + 80),
+    )
+    return fig
+
+
 def _shows_figure(show_summary: pl.DataFrame) -> go.Figure:
     shows_sorted = show_summary.sort("total_plays", descending=False)
     shows = shows_sorted["program"].to_list()
@@ -342,6 +372,7 @@ def generate_report() -> None:
     daily = _load_parquet(storage.ANALYTICS_DIR / "daily_summary.parquet")
     show_summary = _load_parquet(storage.ANALYTICS_DIR / "program_summary.parquet")
     decades = _load_parquet(storage.ANALYTICS_DIR / "release_decade_summary.parquet")
+    genre_summary = _load_parquet(storage.ANALYTICS_DIR / "genre_summary.parquet")
     playlist = _load_parquet(storage.PLAYLIST_PATH)
 
     if daily is None or daily.is_empty():
@@ -349,6 +380,11 @@ def generate_report() -> None:
         return
 
     fig_music_pct = _music_pct_figure(daily)
+
+    if genre_summary is not None and not genre_summary.is_empty():
+        fig_genres = _genres_figure(genre_summary)
+    else:
+        fig_genres = go.Figure()
 
     if decades is not None and not decades.is_empty():
         fig_decades = _decades_figure(decades)
@@ -370,6 +406,7 @@ def generate_report() -> None:
     template = Template(_TEMPLATE)
     html = template.render(
         fig_music_pct=_fig_to_json(fig_music_pct),
+        fig_genres=_fig_to_json(fig_genres),
         fig_decades=_fig_to_json(fig_decades),
         fig_shows=_fig_to_json(fig_shows),
         top_artists=top_artists,
