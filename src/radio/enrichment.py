@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-import queue
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Callable
 
@@ -16,9 +16,6 @@ from radio.storage import TRACKS_SCHEMA
 
 logger = logging.getLogger(__name__)
 
-# Sentinel to signal workers to stop
-_STOP = ("__STOP__", "__STOP__")
-
 
 @dataclass
 class _Provider:
@@ -29,7 +26,7 @@ class _Provider:
 
 
 def _build_providers() -> tuple[_Provider, ...]:
-    """Build list of available providers."""
+    """Build list of available providers in priority order."""
     providers = [
         _Provider(name="deezer", search=deezer.search, rate=deezer.RATE_LIMIT, workers=3),
         _Provider(name="itunes", search=itunes.search, rate=itunes.RATE_LIMIT, workers=1),
@@ -39,7 +36,7 @@ def _build_providers() -> tuple[_Provider, ...]:
         from radio.providers import spotify_provider
         if spotify_provider.available():
             providers.append(
-                _Provider(name="spotify", search=spotify_provider.search, rate=spotify_provider.RATE_LIMIT, workers=3)
+                _Provider(name="spotify", search=spotify_provider.search, rate=spotify_provider.RATE_LIMIT, workers=1)
             )
     except Exception:
         logger.debug("spotify provider unavailable")
@@ -103,34 +100,22 @@ def get_unenriched_pairs(
     )
 
 
-def enrich_tracks(
-    pairs: tuple[tuple[str, str], ...],
-    save_every: int = 500,
-    on_batch: Callable[[pl.DataFrame], None] | None = None,
-) -> pl.DataFrame:
-    """Enrich tracks using all available providers in parallel.
-
-    Uses a shared work queue: each pair is processed by one provider at a time.
-    Misses go to a retry queue for other providers to attempt.
-    """
-    providers = _build_providers()
-    logger.info("providers=%s", [p.name for p in providers])
-
-    # Work queue — each item is (artist, title, tried_providers)
-    work_q: queue.Queue[tuple[str, str, frozenset[str]]] = queue.Queue()
-    for artist, title in pairs:
-        work_q.put((artist, title, frozenset()))
-
-    # Retry queue — pairs that missed, to be redistributed
-    retry_q: queue.Queue[tuple[str, str, frozenset[str]]] = queue.Queue()
-
-    # Results
-    found: set[tuple[str, str]] = set()
-    found_lock = threading.Lock()
-    rows: list[dict] = []
-    rows_lock = threading.Lock()
-    counters = {"completed": 0, "matched": 0, "last_saved": 0}
-    provider_names = frozenset(p.name for p in providers)
+def _run_provider(
+    provider: _Provider,
+    pairs: list[tuple[str, str]],
+    rows: list[dict],
+    rows_lock: threading.Lock,
+    counters: dict,
+    total: int,
+    save_every: int,
+    on_batch: Callable[[pl.DataFrame], None] | None,
+) -> list[tuple[str, str]]:
+    """Run a single provider against a list of pairs. Returns misses."""
+    limiter = _RateLimiter(provider.rate)
+    plog = logging.getLogger(f"radio.enrichment.{provider.name}")
+    misses: list[tuple[str, str]] = []
+    misses_lock = threading.Lock()
+    banned = threading.Event()
 
     def _maybe_flush() -> None:
         pending = len(rows) - counters["last_saved"]
@@ -140,135 +125,84 @@ def enrich_tracks(
             on_batch(batch)
             logger.info("batch_saved rows=%d total_saved=%d", len(batch), counters["last_saved"])
 
-    def _worker(provider: _Provider, limiter: _RateLimiter) -> None:
-        plog = logging.getLogger(f"radio.enrichment.{provider.name}")
+    def _process(artist: str, title: str) -> None:
+        if banned.is_set():
+            with misses_lock:
+                misses.append((artist, title))
+            return
 
-        while True:
-            try:
-                item = work_q.get(timeout=1)
-            except queue.Empty:
-                return
-
-            artist, title = item[0], item[1]
-            tried = item[2]
-
-            if artist == _STOP[0]:
-                work_q.put(item)  # re-add for other workers
-                return
-
-            # Skip if already found by another provider
-            with found_lock:
-                if (artist, title) in found:
-                    work_q.task_done()
-                    continue
-
-            # Skip if this provider already tried
-            if provider.name in tried:
-                # Put back for other providers
-                retry_q.put((artist, title, tried))
-                work_q.task_done()
-                continue
-
-            limiter.wait()
-
-            try:
-                match = provider.search(artist, title)
-            except RateBanError:
-                plog.warning("rate ban — stopping provider")
-                # Put item back for other providers
-                retry_q.put((artist, title, tried | {provider.name}))
-                work_q.task_done()
-                # Drain remaining items back to retry queue
-                while True:
-                    try:
-                        remaining_item = work_q.get_nowait()
-                        if remaining_item[0] != _STOP[0]:
-                            retry_q.put((remaining_item[0], remaining_item[1], remaining_item[2] | {provider.name}))
-                        work_q.task_done()
-                    except queue.Empty:
-                        break
-                return
-            except Exception as exc:
-                plog.debug("error artist=%r title=%r error=%s", artist, title, exc)
-                retry_q.put((artist, title, tried | {provider.name}))
-                work_q.task_done()
-                continue
-
-            with rows_lock:
-                with found_lock:
-                    if (artist, title) in found:
-                        work_q.task_done()
-                        continue
-                    found.add((artist, title))
-
-                if match is not None:
-                    rows.append(_match_to_row(artist, title, match))
-                    counters["matched"] += 1
-                else:
-                    # Search returned None — provider couldn't find it
-                    found.discard((artist, title))
-                    retry_q.put((artist, title, tried | {provider.name}))
-
-                counters["completed"] += 1
-                if counters["completed"] % 500 == 0:
-                    logger.info(
-                        "progress=%d/%d matched=%d queue=%d",
-                        counters["completed"], len(pairs),
-                        counters["matched"], work_q.qsize(),
-                    )
-                _maybe_flush()
-
-            work_q.task_done()
-
-    # Run rounds until no more progress
-    max_rounds = len(providers)
-    for round_num in range(max_rounds):
-        if work_q.empty() and retry_q.empty():
-            break
-
-        # Move retries back to work queue (only pairs not yet tried by all providers)
-        moved = 0
-        while not retry_q.empty():
-            try:
-                item = retry_q.get_nowait()
-                if item[2] < provider_names:  # still has untried providers
-                    work_q.put(item)
-                    moved += 1
-            except queue.Empty:
-                break
-
-        if work_q.empty():
-            break
-
-        if round_num > 0:
-            logger.info("round=%d retrying=%d pairs with remaining providers", round_num + 1, moved)
-
-        # Start workers for all providers
-        threads: list[threading.Thread] = []
-        for provider in providers:
-            limiter = _RateLimiter(provider.rate)
-            for i in range(provider.workers):
-                t = threading.Thread(
-                    target=_worker,
-                    args=(provider, limiter),
-                    name=f"{provider.name}-{i}",
-                )
-                t.start()
-                threads.append(t)
+        limiter.wait()
 
         try:
-            for t in threads:
-                t.join()
-        except KeyboardInterrupt:
-            logger.warning("interrupted — saving progress")
-            # Signal workers to stop
-            for _ in threads:
-                work_q.put((_STOP[0], _STOP[1], frozenset()))
+            match = provider.search(artist, title)
+        except RateBanError:
+            plog.warning("rate ban — stopping provider")
+            banned.set()
+            with misses_lock:
+                misses.append((artist, title))
+            return
+        except Exception as exc:
+            plog.debug("error artist=%r title=%r error=%s", artist, title, exc)
+            with misses_lock:
+                misses.append((artist, title))
+            return
 
-    logger.info(
-        "enrichment_done matched=%d/%d",
-        counters["matched"], len(pairs),
-    )
+        with rows_lock:
+            if match is not None:
+                rows.append(_match_to_row(artist, title, match))
+                counters["matched"] += 1
+            else:
+                with misses_lock:
+                    misses.append((artist, title))
+
+            counters["completed"] += 1
+            if counters["completed"] % 500 == 0 or counters["completed"] == total:
+                logger.info(
+                    "progress=%d/%d matched=%d provider=%s",
+                    counters["completed"], total,
+                    counters["matched"], provider.name,
+                )
+            _maybe_flush()
+
+    with ThreadPoolExecutor(max_workers=provider.workers) as pool:
+        futures = [pool.submit(_process, a, t) for a, t in pairs]
+        try:
+            for future in as_completed(futures):
+                future.result()
+        except KeyboardInterrupt:
+            plog.warning("interrupted")
+            banned.set()
+
+    plog.info("provider_done processed=%d misses=%d", len(pairs) - len(misses), len(misses))
+    return misses
+
+
+def enrich_tracks(
+    pairs: tuple[tuple[str, str], ...],
+    save_every: int = 500,
+    on_batch: Callable[[pl.DataFrame], None] | None = None,
+) -> pl.DataFrame:
+    """Enrich tracks using providers in sequence: each provider processes all
+    remaining pairs, then misses pass to the next provider."""
+    providers = _build_providers()
+    logger.info("providers=%s pairs=%d", [p.name for p in providers], len(pairs))
+
+    rows: list[dict] = []
+    rows_lock = threading.Lock()
+    counters = {"completed": 0, "matched": 0, "last_saved": 0}
+    remaining = list(pairs)
+
+    for provider in providers:
+        if not remaining:
+            break
+
+        logger.info("starting provider=%s remaining=%d", provider.name, len(remaining))
+        remaining = _run_provider(
+            provider, remaining, rows, rows_lock, counters,
+            total=len(pairs), save_every=save_every, on_batch=on_batch,
+        )
+
+    logger.info("enrichment_done matched=%d/%d unmatched=%d", counters["matched"], len(pairs), len(remaining))
 
     # Return unsaved rows
     unsaved = rows[counters["last_saved"]:]
