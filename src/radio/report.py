@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 
 import plotly.graph_objects as go
@@ -54,6 +55,29 @@ _TEMPLATE = """<!DOCTYPE html>
       margin-top: 0.5rem;
     }
 
+    .lang-toggle {
+      display: inline-flex;
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+
+    .lang-toggle button {
+      background: #1e1e38;
+      color: #8888aa;
+      border: 1px solid #2a2a4a;
+      border-radius: 6px;
+      padding: 0.3rem 0.8rem;
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: all 0.2s;
+    }
+
+    .lang-toggle button.active {
+      background: #a78bfa;
+      color: #0f0f1a;
+      border-color: #a78bfa;
+    }
+
     .section {
       background: #16162a;
       border: 1px solid #2a2a4a;
@@ -71,10 +95,67 @@ _TEMPLATE = """<!DOCTYPE html>
       border-bottom: 1px solid #2a2a4a;
     }
 
+    .section-desc {
+      color: #8888aa;
+      font-size: 0.85rem;
+      margin-bottom: 1rem;
+    }
+
     .chart-container {
       width: 100%;
       min-height: 380px;
     }
+
+    .insight-box {
+      background: #1a1a35;
+      border-left: 3px solid #a78bfa;
+      border-radius: 0 8px 8px 0;
+      padding: 0.9rem 1.2rem;
+      margin-top: 1rem;
+      font-size: 0.88rem;
+      color: #c0c0e0;
+      line-height: 1.65;
+    }
+
+    .insight-box strong {
+      color: #c4b5fd;
+    }
+
+    .insight-box.warning {
+      border-left-color: #ef4444;
+    }
+
+    .insight-box.warning strong {
+      color: #fca5a5;
+    }
+
+    .insight-box.positive {
+      border-left-color: #22c55e;
+    }
+
+    .insight-box.positive strong {
+      color: #86efac;
+    }
+
+    .changepoints {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+    }
+
+    .changepoint-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      background: #1e1e38;
+      border-radius: 6px;
+      padding: 0.3rem 0.7rem;
+      font-size: 0.8rem;
+    }
+
+    .changepoint-tag.drop { color: #fca5a5; border: 1px solid #7f1d1d; }
+    .changepoint-tag.increase { color: #86efac; border: 1px solid #14532d; }
 
     table {
       width: 100%;
@@ -114,68 +195,203 @@ _TEMPLATE = """<!DOCTYPE html>
       font-variant-numeric: tabular-nums;
     }
 
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .stat-card {
+      background: #1a1a35;
+      border-radius: 8px;
+      padding: 1rem;
+      text-align: center;
+    }
+
+    .stat-card .value {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #a78bfa;
+    }
+
+    .stat-card .label {
+      font-size: 0.78rem;
+      color: #8888aa;
+      margin-top: 0.25rem;
+    }
+
     footer {
       text-align: center;
       color: #44446a;
       font-size: 0.8rem;
       padding: 2rem 0 1rem;
     }
+
+    footer a { color: #6366f1; text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
       <h1>Radio 357 Analytics</h1>
-      <p>Auto-generated from playlist data</p>
+      <p data-en="Data-driven analysis of Radio 357 playlists since 2022" data-pl="Analiza danych playlist Radia 357 od 2022 roku"></p>
+      <div class="lang-toggle">
+        <button id="btn-en" class="active" onclick="setLang('en')">English</button>
+        <button id="btn-pl" onclick="setLang('pl')">Polski</button>
+      </div>
     </header>
 
+    <!-- Summary stats -->
     <div class="section">
-      <h2>Songs Per Day</h2>
+      <h2 data-en="Overview" data-pl="Podsumowanie"></h2>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="value">{{ total_plays }}</div>
+          <div class="label" data-en="Total Plays" data-pl="Odtworzeń"></div>
+        </div>
+        <div class="stat-card">
+          <div class="value">{{ unique_songs }}</div>
+          <div class="label" data-en="Unique Songs" data-pl="Unikalnych utworów"></div>
+        </div>
+        <div class="stat-card">
+          <div class="value">{{ unique_artists }}</div>
+          <div class="label" data-en="Unique Artists" data-pl="Unikalnych artystów"></div>
+        </div>
+        <div class="stat-card">
+          <div class="value">{{ days_scraped }}</div>
+          <div class="label" data-en="Days Analyzed" data-pl="Przeanalizowanych dni"></div>
+        </div>
+        <div class="stat-card">
+          <div class="value">{{ avg_songs_per_day }}</div>
+          <div class="label" data-en="Avg Songs/Day" data-pl="Śr. utworów/dzień"></div>
+        </div>
+        <div class="stat-card">
+          <div class="value">{{ avg_music_pct }}%</div>
+          <div class="label" data-en="Avg Music Time" data-pl="Śr. czas muzyki"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Songs per day -->
+    <div class="section">
+      <h2 data-en="Songs Per Day" data-pl="Utwory dziennie"></h2>
+      <p class="section-desc" data-en="Number of songs played each day with 7-day rolling average." data-pl="Liczba odtworzonych utworów dziennie ze średnią kroczącą 7 dni."></p>
       <div id="chart-songs-per-day" class="chart-container"></div>
+      <div class="insight-box warning">
+        <strong data-en="Notable drop:" data-pl="Zauważalny spadek:"></strong>
+        <span data-en="From ~300 songs/day in January 2026 to ~246 in March 2026 — an 18% decline in just two months." data-pl="Ze ~300 utworów/dzień w styczniu 2026 do ~246 w marcu 2026 — spadek o 18% w zaledwie dwa miesiące."></span>
+      </div>
     </div>
 
+    <!-- Music vs Talk -->
     <div class="section">
-      <h2>Music vs Talk Time</h2>
+      <h2 data-en="Music vs Talk Time" data-pl="Muzyka vs audycje"></h2>
+      <p class="section-desc" data-en="Percentage of broadcast time filled with music (based on track durations)." data-pl="Procent czasu antenowego wypełnionego muzyką (na podstawie długości utworów)."></p>
       <div id="chart-music-pct" class="chart-container"></div>
+      <div class="insight-box">
+        <strong data-en="How it's calculated:" data-pl="Jak to liczymy:"></strong>
+        <span data-en="Sum of track durations per day divided by 24 hours. Days with lower coverage show more talk programming." data-pl="Suma długości utworów w ciągu dnia podzielona przez 24 godziny. Dni z niższym wynikiem to więcej audycji słownych."></span>
+      </div>
     </div>
 
+    <!-- Prophet: Songs trend -->
     <div class="section">
-      <h2>Eclecticity — Unique Ratio</h2>
-      <p style="color: #8888aa; font-size: 0.85rem; margin-bottom: 1rem;">Unique songs / total plays per week. Higher = less repetition.</p>
+      <h2 data-en="Trend Analysis — Songs Per Day" data-pl="Analiza trendu — utwory dziennie"></h2>
+      <p class="section-desc" data-en="Long-term trend extracted using Prophet. Dashed lines mark statistically significant change points." data-pl="Trend długoterminowy wyodrębniony za pomocą Prophet. Linie przerywane oznaczają statystycznie istotne punkty zmiany."></p>
+      <div id="chart-songs-trend" class="chart-container"></div>
+      {% if songs_changepoints %}
+      <div class="insight-box warning">
+        <strong data-en="Detected change points:" data-pl="Wykryte punkty zmiany:"></strong>
+        <div class="changepoints">
+          {% for cp in songs_changepoints %}
+          <span class="changepoint-tag {{ cp.direction }}">
+            {{ cp.date }} {{ "▼" if cp.direction == "drop" else "▲" }}
+          </span>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Prophet: Music % trend -->
+    <div class="section">
+      <h2 data-en="Trend Analysis — Music Share" data-pl="Analiza trendu — udział muzyki"></h2>
+      <p class="section-desc" data-en="Long-term trend of music percentage with detected structural changes." data-pl="Trend długoterminowy udziału muzyki z wykrytymi zmianami strukturalnymi."></p>
+      <div id="chart-music-pct-trend" class="chart-container"></div>
+      {% if music_pct_changepoints %}
+      <div class="insight-box warning">
+        <strong data-en="Detected change points:" data-pl="Wykryte punkty zmiany:"></strong>
+        <div class="changepoints">
+          {% for cp in music_pct_changepoints %}
+          <span class="changepoint-tag {{ cp.direction }}">
+            {{ cp.date }} {{ "▼" if cp.direction == "drop" else "▲" }}
+          </span>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Prophet: Weekly seasonality -->
+    <div class="section">
+      <h2 data-en="Weekly Pattern" data-pl="Wzorzec tygodniowy"></h2>
+      <p class="section-desc" data-en="How the number of songs varies by day of week (Prophet seasonal component)." data-pl="Jak zmienia się liczba utworów w zależności od dnia tygodnia (komponent sezonowy Prophet)."></p>
+      <div id="chart-songs-weekly" class="chart-container"></div>
+      <div class="insight-box">
+        <strong data-en="Pattern:" data-pl="Wzorzec:"></strong>
+        <span data-en="Weekdays consistently have more music than weekends, reflecting talk-heavy weekend programming." data-pl="W dni robocze konsekwentnie jest więcej muzyki niż w weekendy, co odzwierciedla audycje słowne w weekendy."></span>
+      </div>
+    </div>
+
+    <!-- Eclecticity: Unique Ratio -->
+    <div class="section">
+      <h2 data-en="Eclecticity — Unique Ratio" data-pl="Eklektyczność — unikalność"></h2>
+      <p class="section-desc" data-en="Unique songs / total plays per week. Higher = less repetition." data-pl="Unikalne utwory / wszystkie odtworzenia w tygodniu. Wyżej = mniej powtórek."></p>
       <div id="chart-unique-ratio" class="chart-container"></div>
+      <div class="insight-box positive">
+        <strong data-en="Good news:" data-pl="Dobra wiadomość:"></strong>
+        <span data-en="Radio 357 barely repeats songs within a week — the ratio stays consistently above 0.93." data-pl="Radio 357 prawie nie powtarza utworów w ciągu tygodnia — wskaźnik utrzymuje się powyżej 0.93."></span>
+      </div>
     </div>
 
+    <!-- Eclecticity: Fresh Music Rate -->
     <div class="section">
-      <h2>Eclecticity — Fresh Music Rate</h2>
-      <p style="color: #8888aa; font-size: 0.85rem; margin-bottom: 1rem;">% of plays that are songs not heard in the prior 90 days.</p>
+      <h2 data-en="Eclecticity — Fresh Music Rate" data-pl="Eklektyczność — świeża muzyka"></h2>
+      <p class="section-desc" data-en="% of plays that are songs not heard in the prior 90 days." data-pl="% odtworzeń utworów, które nie były grane w ciągu ostatnich 90 dni."></p>
       <div id="chart-new-song" class="chart-container"></div>
     </div>
 
+    <!-- Eclecticity: Artist HHI -->
     <div class="section">
-      <h2>Eclecticity — Artist Concentration</h2>
-      <p style="color: #8888aa; font-size: 0.85rem; margin-bottom: 1rem;">Herfindahl-Hirschman Index of artist play share. Lower = more diverse.</p>
+      <h2 data-en="Eclecticity — Artist Concentration" data-pl="Eklektyczność — koncentracja artystów"></h2>
+      <p class="section-desc" data-en="Herfindahl-Hirschman Index of artist play share per week. Lower = more diverse." data-pl="Indeks Herfindahla-Hirschmana udziału artystów w tygodniu. Niżej = większa różnorodność."></p>
       <div id="chart-hhi" class="chart-container"></div>
     </div>
 
+    <!-- Top Genres -->
     <div class="section">
-      <h2>Top Genres</h2>
+      <h2 data-en="Top Genres" data-pl="Najpopularniejsze gatunki"></h2>
       <div id="chart-genres" class="chart-container"></div>
     </div>
 
+    <!-- Release Decades -->
     <div class="section">
-      <h2>Release Decades</h2>
+      <h2 data-en="Release Decades" data-pl="Dekady wydania"></h2>
+      <p class="section-desc" data-en="Distribution of played tracks by release decade." data-pl="Rozkład odtwarzanych utworów według dekady wydania."></p>
       <div id="chart-decades" class="chart-container"></div>
     </div>
 
-
+    <!-- Top Artists -->
     <div class="section">
-      <h2>Most Played Artists</h2>
+      <h2 data-en="Most Played Artists" data-pl="Najczęściej grani artyści"></h2>
       <table>
         <thead>
           <tr>
             <th class="rank">#</th>
-            <th>Artist</th>
-            <th class="count">Plays</th>
+            <th data-en="Artist" data-pl="Artysta"></th>
+            <th class="count" data-en="Plays" data-pl="Odtworzeń"></th>
           </tr>
         </thead>
         <tbody>
@@ -190,15 +406,16 @@ _TEMPLATE = """<!DOCTYPE html>
       </table>
     </div>
 
+    <!-- Top Songs -->
     <div class="section">
-      <h2>Most Played Songs</h2>
+      <h2 data-en="Most Played Songs" data-pl="Najczęściej grane utwory"></h2>
       <table>
         <thead>
           <tr>
             <th class="rank">#</th>
-            <th>Artist</th>
-            <th>Title</th>
-            <th class="count">Plays</th>
+            <th data-en="Artist" data-pl="Artysta"></th>
+            <th data-en="Title" data-pl="Tytuł"></th>
+            <th class="count" data-en="Plays" data-pl="Odtworzeń"></th>
           </tr>
         </thead>
         <tbody>
@@ -214,10 +431,27 @@ _TEMPLATE = """<!DOCTYPE html>
       </table>
     </div>
 
-    <footer>Radio 357 Analytics &mdash; generated automatically</footer>
+    <footer>
+      <span data-en="Radio 357 Analytics — data from" data-pl="Radio 357 Analytics — dane od"></span>
+      {{ date_min }} <span data-en="to" data-pl="do"></span> {{ date_max }} &mdash;
+      <a href="https://github.com/debitCredit/radio">source code</a>
+    </footer>
   </div>
 
   <script>
+    // i18n
+    var currentLang = 'en';
+
+    function setLang(lang) {
+      currentLang = lang;
+      document.querySelectorAll('[data-en]').forEach(function(el) {
+        el.textContent = el.getAttribute('data-' + lang);
+      });
+      document.getElementById('btn-en').classList.toggle('active', lang === 'en');
+      document.getElementById('btn-pl').classList.toggle('active', lang === 'pl');
+    }
+
+    // Charts
     var layout_defaults = {
       paper_bgcolor: '#16162a',
       plot_bgcolor: '#16162a',
@@ -226,6 +460,8 @@ _TEMPLATE = """<!DOCTYPE html>
     };
 
     function plot(id, fig) {
+      var el = document.getElementById(id);
+      if (!el) return;
       var data = fig.data;
       var layout = Object.assign({}, layout_defaults, fig.layout);
       Plotly.newPlot(id, data, layout, { responsive: true, displayModeBar: false });
@@ -233,6 +469,9 @@ _TEMPLATE = """<!DOCTYPE html>
 
     plot('chart-songs-per-day', {{ fig_songs_per_day | safe }});
     plot('chart-music-pct', {{ fig_music_pct | safe }});
+    plot('chart-songs-trend', {{ fig_songs_trend | safe }});
+    plot('chart-music-pct-trend', {{ fig_music_pct_trend | safe }});
+    plot('chart-songs-weekly', {{ fig_songs_weekly | safe }});
     plot('chart-unique-ratio', {{ fig_unique_ratio | safe }});
     plot('chart-new-song', {{ fig_new_song | safe }});
     plot('chart-hhi', {{ fig_hhi | safe }});
@@ -307,20 +546,13 @@ def _music_pct_figure(daily: pl.DataFrame) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=dates,
-            y=music_pct,
-            mode="lines",
-            name="Daily",
-            line={"color": "#6366f1", "width": 1},
-            opacity=0.5,
+            x=dates, y=music_pct, mode="lines", name="Daily",
+            line={"color": "#6366f1", "width": 1}, opacity=0.5,
         )
     )
     fig.add_trace(
         go.Scatter(
-            x=dates,
-            y=rolling,
-            mode="lines",
-            name="7-day avg",
+            x=dates, y=rolling, mode="lines", name="7-day avg",
             line={"color": "#a78bfa", "width": 2.5},
         )
     )
@@ -343,9 +575,6 @@ def _weekly_line_figure(
     rolling_window: int = 8,
 ) -> go.Figure:
     """Generic weekly line chart with rolling average."""
-    # Build a pseudo-date from iso_year + iso_week for the x-axis
-    import datetime
-
     dates = [
         datetime.date.fromisocalendar(int(row["iso_year"]), int(row["iso_week"]), 1)
         for row in df.iter_rows(named=True)
@@ -390,8 +619,7 @@ def _decades_figure(decades: pl.DataFrame) -> go.Figure:
 
     fig = go.Figure(
         go.Bar(
-            x=labels,
-            y=counts,
+            x=labels, y=counts,
             marker_color="#7c3aed",
             marker_line_color="#a78bfa",
             marker_line_width=1,
@@ -412,9 +640,7 @@ def _genres_figure(genre_summary: pl.DataFrame, n: int = 25) -> go.Figure:
 
     fig = go.Figure(
         go.Bar(
-            x=counts,
-            y=genres,
-            orientation="h",
+            x=counts, y=genres, orientation="h",
             marker_color="#10b981",
             marker_line_color="#34d399",
             marker_line_width=1,
@@ -427,7 +653,6 @@ def _genres_figure(genre_summary: pl.DataFrame, n: int = 25) -> go.Figure:
         height=max(350, n * 28 + 80),
     )
     return fig
-
 
 
 def _top_artists(playlist: pl.DataFrame, n: int = 20) -> list[dict]:
@@ -453,6 +678,10 @@ def _top_songs(playlist: pl.DataFrame, n: int = 20) -> list[dict]:
     ]
 
 
+def _empty_fig_json() -> str:
+    return _fig_to_json(go.Figure())
+
+
 def generate_report() -> None:
     daily = _load_parquet(storage.ANALYTICS_DIR / "daily_summary.parquet")
     decades = _load_parquet(storage.ANALYTICS_DIR / "release_decade_summary.parquet")
@@ -464,9 +693,30 @@ def generate_report() -> None:
         print("No daily_summary data found — run analytics first.")
         return
 
+    # Summary stats
+    if playlist is not None and not playlist.is_empty():
+        total_plays = f"{len(playlist):,}"
+        unique_songs = f"{playlist.select(['artist', 'title']).unique().height:,}"
+        unique_artists = f"{playlist['artist'].n_unique():,}"
+        days_scraped = str(playlist["date"].n_unique())
+        avg_songs_per_day = str(round(len(playlist) / playlist["date"].n_unique()))
+        date_min = str(playlist["date"].min())
+        date_max = str(playlist["date"].max())
+    else:
+        total_plays = unique_songs = unique_artists = days_scraped = avg_songs_per_day = "—"
+        date_min = date_max = "—"
+
+    avg_music_pct = str(round(daily["music_pct"].drop_nulls().mean(), 1))
+
     fig_songs_per_day = _songs_per_day_figure(daily)
     fig_music_pct = _music_pct_figure(daily)
 
+    # Prophet analysis
+    from radio.forecast import run_analysis
+
+    prophet_results = run_analysis(daily)
+
+    # Eclecticity
     if eclecticity is not None and not eclecticity.is_empty():
         fig_unique_ratio = _weekly_line_figure(
             eclecticity, "unique_ratio",
@@ -482,19 +732,10 @@ def generate_report() -> None:
             color="#fb923c", rolling_color="#f97316", yaxis_title="HHI (lower = more diverse)",
         )
     else:
-        fig_unique_ratio = go.Figure()
-        fig_new_song = go.Figure()
-        fig_hhi = go.Figure()
+        fig_unique_ratio = fig_new_song = fig_hhi = go.Figure()
 
-    if genre_summary is not None and not genre_summary.is_empty():
-        fig_genres = _genres_figure(genre_summary)
-    else:
-        fig_genres = go.Figure()
-
-    if decades is not None and not decades.is_empty():
-        fig_decades = _decades_figure(decades)
-    else:
-        fig_decades = go.Figure()
+    fig_genres = _genres_figure(genre_summary) if genre_summary is not None and not genre_summary.is_empty() else go.Figure()
+    fig_decades = _decades_figure(decades) if decades is not None and not decades.is_empty() else go.Figure()
 
     if playlist is not None and not playlist.is_empty():
         top_artists = _top_artists(playlist)
@@ -505,15 +746,32 @@ def generate_report() -> None:
 
     template = Template(_TEMPLATE)
     html = template.render(
+        # Stats
+        total_plays=total_plays,
+        unique_songs=unique_songs,
+        unique_artists=unique_artists,
+        days_scraped=days_scraped,
+        avg_songs_per_day=avg_songs_per_day,
+        avg_music_pct=avg_music_pct,
+        date_min=date_min,
+        date_max=date_max,
+        # Charts
         fig_songs_per_day=_fig_to_json(fig_songs_per_day),
         fig_music_pct=_fig_to_json(fig_music_pct),
+        fig_songs_trend=prophet_results.get("fig_songs_trend", _empty_fig_json()),
+        fig_music_pct_trend=prophet_results.get("fig_music_pct_trend", _empty_fig_json()),
+        fig_songs_weekly=prophet_results.get("fig_songs_weekly", _empty_fig_json()),
         fig_unique_ratio=_fig_to_json(fig_unique_ratio),
         fig_new_song=_fig_to_json(fig_new_song),
         fig_hhi=_fig_to_json(fig_hhi),
         fig_genres=_fig_to_json(fig_genres),
         fig_decades=_fig_to_json(fig_decades),
+        # Tables
         top_artists=top_artists,
         top_songs=top_songs,
+        # Prophet insights
+        songs_changepoints=prophet_results.get("songs_changepoints", []),
+        music_pct_changepoints=prophet_results.get("music_pct_changepoints", []),
     )
 
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
