@@ -76,6 +76,7 @@ def _match_to_row(artist: str, title: str, match: TrackMatch) -> dict:
         "release_date": match.release_date,
         "genre": match.genre,
         "source": match.source,
+        "confidence": match.confidence,
     }
 
 

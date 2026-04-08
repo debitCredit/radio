@@ -5,7 +5,7 @@ import time
 
 import httpx
 
-from radio.providers import TrackMatch, normalize
+from radio.providers import MIN_CONFIDENCE, TrackMatch, match_confidence, normalize
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,8 @@ def search(artist: str, title: str) -> TrackMatch | None:
     if not data:
         return None
 
-    best = _pick_best(data, norm_artist, norm_title)
-    if best is None:
+    best, conf = _pick_best(data, artist, title)
+    if best is None or conf < MIN_CONFIDENCE:
         return None
 
     return TrackMatch(
@@ -52,6 +52,7 @@ def search(artist: str, title: str) -> TrackMatch | None:
         release_date="",  # Not in search results
         genre=None,  # Not in search results
         source="deezer",
+        confidence=conf,
     )
 
 
@@ -89,18 +90,20 @@ def _request(params: dict, retries: int = 3) -> dict | None:
 
 def _pick_best(
     results: list[dict],
-    norm_artist: str,
-    norm_title: str,
-) -> dict | None:
-    """Pick the best match from Deezer results."""
-    norm_artist_lower = norm_artist.lower()
-    norm_title_lower = norm_title.lower()
+    query_artist: str,
+    query_title: str,
+) -> tuple[dict | None, float]:
+    """Pick the best match by confidence score. Returns (result, confidence)."""
+    best_result = None
+    best_conf = 0.0
 
     for result in results:
-        r_artist = normalize(result.get("artist", {}).get("name", "")).lower()
-        r_title = normalize(result.get("title", "")).lower()
-        if norm_artist_lower in r_artist or r_artist in norm_artist_lower:
-            if norm_title_lower in r_title or r_title in norm_title_lower:
-                return result
+        conf = match_confidence(
+            query_artist, query_title,
+            result.get("artist", {}).get("name", ""), result.get("title", ""),
+        )
+        if conf > best_conf:
+            best_conf = conf
+            best_result = result
 
-    return results[0] if results else None
+    return best_result, best_conf

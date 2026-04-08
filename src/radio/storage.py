@@ -32,6 +32,7 @@ TRACKS_SCHEMA: dict[str, pl.PolarsDataType] = {
     "release_date": pl.Utf8,
     "genre": pl.Utf8,
     "source": pl.Utf8,
+    "confidence": pl.Float64,
 }
 
 
@@ -72,6 +73,8 @@ def load_tracks() -> pl.DataFrame:
             df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias("genre"))
         if "source" not in df.columns:
             df = df.with_columns(pl.lit("spotify").alias("source"))
+        if "confidence" not in df.columns:
+            df = df.with_columns(pl.lit(None).cast(pl.Float64).alias("confidence"))
         return df
     return pl.DataFrame(schema=TRACKS_SCHEMA)
 

@@ -8,7 +8,7 @@ import spotipy
 from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import SpotifyClientCredentials
 
-from radio.providers import TrackMatch, normalize
+from radio.providers import MIN_CONFIDENCE, TrackMatch, match_confidence, normalize
 
 logger = logging.getLogger(__name__)
 
@@ -60,29 +60,34 @@ def search(artist: str, title: str) -> TrackMatch | None:
     original_query = f"track:{title} artist:{artist}"
     queries = (normalized_query,) if normalized_query == original_query else (normalized_query, original_query)
 
+    best_match: TrackMatch | None = None
+    best_conf = 0.0
+
     for query in queries:
         result = _search_with_retry(sp, query)
         if result is None:
             continue
-        items = result.get("tracks", {}).get("items", [])
-        if items:
-            break
-    else:
+        for track in result.get("tracks", {}).get("items", []):
+            matched_artist = track["artists"][0]["name"] if track["artists"] else ""
+            conf = match_confidence(artist, title, matched_artist, track["name"])
+            if conf > best_conf:
+                best_conf = conf
+                best_match = TrackMatch(
+                    track_id=f"spotify:{track['id']}",
+                    matched_artist=matched_artist,
+                    matched_title=track["name"],
+                    duration_ms=track["duration_ms"],
+                    explicit=track.get("explicit", False),
+                    album=track["album"]["name"],
+                    release_date=track["album"].get("release_date", ""),
+                    genre=None,
+                    source="spotify",
+                    confidence=conf,
+                )
+
+    if best_match is None or best_conf < MIN_CONFIDENCE:
         return None
-
-    track = items[0]
-
-    return TrackMatch(
-        track_id=f"spotify:{track['id']}",
-        matched_artist=track["artists"][0]["name"] if track["artists"] else "",
-        matched_title=track["name"],
-        duration_ms=track["duration_ms"],
-        explicit=track.get("explicit", False),
-        album=track["album"]["name"],
-        release_date=track["album"].get("release_date", ""),
-        genre=None,  # Deprecated in Spotify API
-        source="spotify",
-    )
+    return best_match
 
 
 def _search_with_retry(
