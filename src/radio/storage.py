@@ -62,10 +62,23 @@ def save_tracks(df: pl.DataFrame) -> None:
     df.write_parquet(TRACKS_PATH)
 
 
-def query(sql: str) -> pl.DataFrame:
+def _make_connection() -> duckdb.DuckDBPyConnection:
+    """Create a DuckDB connection with playlist and tracks registered."""
     con = duckdb.connect()
     if PLAYLIST_PATH.exists():
         con.register("playlist", con.read_parquet(str(PLAYLIST_PATH)))
     if TRACKS_PATH.exists():
         con.register("tracks", con.read_parquet(str(TRACKS_PATH)))
+    return con
+
+
+def query(sql: str) -> pl.DataFrame:
+    """Run a single SQL query."""
+    con = _make_connection()
     return con.execute(sql).pl()
+
+
+def query_many(queries: dict[str, str]) -> dict[str, pl.DataFrame]:
+    """Run multiple SQL queries against a single connection, avoiding re-reads."""
+    con = _make_connection()
+    return {name: con.execute(sql).pl() for name, sql in queries.items()}

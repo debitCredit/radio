@@ -55,16 +55,35 @@ def get_unenriched_pairs(
     )
 
 
-def enrich_tracks(pairs: tuple[tuple[str, str], ...], workers: int = 10) -> pl.DataFrame:
-    """Search Spotify for each (artist, title) pair concurrently."""
+def enrich_tracks(
+    pairs: tuple[tuple[str, str], ...],
+    workers: int = 10,
+    save_every: int = 500,
+    on_batch: callable = None,
+) -> pl.DataFrame:
+    """Search Spotify for each (artist, title) pair concurrently.
+
+    Args:
+        pairs: (artist, title) tuples to look up.
+        workers: concurrent threads.
+        save_every: call on_batch every N completed tracks for incremental persistence.
+        on_batch: callback receiving a pl.DataFrame of newly enriched rows to save.
+    """
     sp = _get_client()
     rows: list[dict] = []
     lock = threading.Lock()
-    completed = 0
-    matched = 0
+    counters = {"completed": 0, "matched": 0, "last_saved": 0}
 
     def _process(artist: str, title: str) -> dict | None:
         return _enrich_one(sp, artist, title)
+
+    def _maybe_flush() -> None:
+        pending = len(rows) - counters["last_saved"]
+        if on_batch and pending >= save_every:
+            batch = pl.DataFrame(rows[counters["last_saved"]:], schema=TRACKS_SCHEMA)
+            counters["last_saved"] = len(rows)
+            on_batch(batch)
+            logger.info("batch_saved rows=%d total_saved=%d", len(batch), counters["last_saved"])
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_process, a, t): (a, t) for a, t in pairs}
@@ -76,33 +95,36 @@ def enrich_tracks(pairs: tuple[tuple[str, str], ...], workers: int = 10) -> pl.D
             with lock:
                 if row is not None:
                     rows.append(row)
-                    matched += 1
+                    counters["matched"] += 1
                 else:
                     logger.debug("no_match artist=%r title=%r", artist, title)
 
-                completed += 1
-                if completed % 500 == 0 or completed == len(pairs):
+                counters["completed"] += 1
+                if counters["completed"] % 500 == 0 or counters["completed"] == len(pairs):
                     logger.info(
                         "progress=%d/%d matched=%d miss=%d",
-                        completed, len(pairs), matched, completed - matched,
+                        counters["completed"], len(pairs),
+                        counters["matched"], counters["completed"] - counters["matched"],
                     )
+
+                _maybe_flush()
 
     if not rows:
         return pl.DataFrame(schema=TRACKS_SCHEMA)
 
-    return pl.DataFrame(rows, schema=TRACKS_SCHEMA)
+    # Return only unsaved rows if on_batch was used, otherwise all
+    unsaved = rows[counters["last_saved"]:]
+    if not unsaved:
+        return pl.DataFrame(schema=TRACKS_SCHEMA)
+    return pl.DataFrame(unsaved, schema=TRACKS_SCHEMA)
 
 
 def _normalize(text: str) -> str:
     """Normalize text for Spotify search: strip diacritics, feat/ft tags, extra whitespace."""
-    # Decompose unicode and drop combining marks (accents)
     text = unicodedata.normalize("NFKD", text)
     text = "".join(c for c in text if not unicodedata.combining(c))
-    # Remove feat./ft./featuring and everything after in parentheses or brackets
     text = re.sub(r"\s*[\(\[](feat\.?|ft\.?|featuring)\b[^\)\]]*[\)\]]", "", text, flags=re.IGNORECASE)
-    # Remove standalone feat./ft. and everything after
     text = re.sub(r"\s*(feat\.?|ft\.?|featuring)\s+.*$", "", text, flags=re.IGNORECASE)
-    # Collapse whitespace
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -116,7 +138,6 @@ def _enrich_one(
     original_query = f"track:{title} artist:{artist}"
     queries = (normalized_query,) if normalized_query == original_query else (normalized_query, original_query)
 
-    # Try normalized first, fall back to original if diacritics matter
     for query in queries:
         result = _search_with_retry(sp, query)
         if result is None:
@@ -172,7 +193,10 @@ def update_playlist_with_track_ids(
     if tracks_df.is_empty():
         return playlist_df
 
-    id_map = tracks_df.select(["artist", "title", "spotify_track_id"])
+    # Deduplicate tracks to prevent join fan-out
+    id_map = tracks_df.select(["artist", "title", "spotify_track_id"]).unique(
+        subset=["artist", "title"], keep="first"
+    )
 
     if "spotify_track_id" in playlist_df.columns:
         base = playlist_df.drop("spotify_track_id")
@@ -180,6 +204,4 @@ def update_playlist_with_track_ids(
         base = playlist_df
 
     updated = base.join(id_map, on=["artist", "title"], how="left")
-
-    cols = [c for c in playlist_df.columns]
-    return updated.select(cols)
+    return updated.select(playlist_df.columns)

@@ -12,6 +12,8 @@ from radio import analytics, storage
 from radio.scraper import SongPlay, find_earliest_date, scrape_range
 from radio.spotify import enrich_tracks, get_unenriched_pairs, update_playlist_with_track_ids
 
+log = logging.getLogger("radio.cli")
+
 
 @click.group()
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging")
@@ -30,7 +32,6 @@ def cli(verbose: bool) -> None:
 @click.option("--to", "to_date", default=None, help="End date YYYY-MM-DD")
 def scrape(from_date: str | None, to_date: str | None) -> None:
     """Scrape playlist data from radio357.pl."""
-    log = logging.getLogger("radio.cli")
     yesterday = datetime.date.today() - datetime.timedelta(days=1)
 
     async def _resolve_earliest() -> datetime.date:
@@ -52,7 +53,8 @@ def scrape(from_date: str | None, to_date: str | None) -> None:
         start = datetime.date.fromisoformat(from_date)
         end = datetime.date.fromisoformat(to_date)
 
-    skip_dates = storage.get_scraped_dates()
+    existing = storage.load_playlist()
+    skip_dates = frozenset(existing["date"].unique().to_list()) if not existing.is_empty() else frozenset()
 
     plays: tuple[SongPlay, ...] = asyncio.run(
         scrape_range(start, end, skip_dates=skip_dates)
@@ -77,7 +79,6 @@ def scrape(from_date: str | None, to_date: str | None) -> None:
         schema=storage.PLAYLIST_SCHEMA,
     )
 
-    existing = storage.load_playlist()
     combined = pl.concat([existing, new_df]) if not existing.is_empty() else new_df
     storage.save_playlist(combined)
 
@@ -97,27 +98,34 @@ def enrich() -> None:
     pairs = get_unenriched_pairs(playlist_df, tracks_df)
 
     if not pairs:
-        print("All tracks enriched.")
+        log.info("All tracks already enriched")
         return
 
-    print(f"Enriching {len(pairs)} unenriched (artist, title) pairs...")
-    new_tracks = enrich_tracks(pairs)
+    log.info("enriching pairs=%d", len(pairs))
 
-    if not new_tracks.is_empty():
-        combined_tracks = (
-            pl.concat([tracks_df, new_tracks]) if not tracks_df.is_empty() else new_tracks
-        )
-        storage.save_tracks(combined_tracks)
+    # Accumulate all saved tracks for the final playlist update
+    all_saved: list[pl.DataFrame] = []
 
-        updated_playlist = update_playlist_with_track_ids(playlist_df, combined_tracks)
+    def _save_batch(batch: pl.DataFrame) -> None:
+        nonlocal tracks_df
+        all_saved.append(batch)
+        tracks_df = pl.concat([tracks_df, batch]) if not tracks_df.is_empty() else batch
+        storage.save_tracks(tracks_df)
+
+    remaining = enrich_tracks(pairs, on_batch=_save_batch)
+
+    if not remaining.is_empty():
+        all_saved.append(remaining)
+        tracks_df = pl.concat([tracks_df, remaining]) if not tracks_df.is_empty() else remaining
+        storage.save_tracks(tracks_df)
+
+    if all_saved:
+        new_tracks = pl.concat(all_saved)
+        updated_playlist = update_playlist_with_track_ids(playlist_df, tracks_df)
         storage.save_playlist(updated_playlist)
-
-        print(
-            f"Enriched {len(new_tracks)}/{len(pairs)} pairs; "
-            f"tracks total: {len(combined_tracks)}"
-        )
+        log.info("enriched=%d/%d tracks_total=%d", len(new_tracks), len(pairs), len(tracks_df))
     else:
-        print(f"No tracks enriched (0/{len(pairs)} matched on Spotify).")
+        log.info("no tracks matched on Spotify (0/%d)", len(pairs))
 
 
 @cli.command()
